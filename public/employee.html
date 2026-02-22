@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<body>
+<h2>Employee Panel</h2>
+<button onclick="generateQR('login')">Login</button>
+<button onclick="generateQR('logout')">Logout</button>
+<br><br>
+<img id="qr" width="250"/>
+<p><b>Session ID:</b> <span id="sid">-</span></p>
+<button onclick="copySession()">Copy Session ID</button>
+
+<script>
+let currentSessionId = "";
+
+async function generateQR(purpose){
+  const res = await fetch('/generate-qr', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({user_id:1, purpose})
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    alert(data.message || "Failed to generate QR");
+    return;
+  }
+  document.getElementById("qr").src = data.qr;
+  currentSessionId = data.session_id || "";
+  document.getElementById("sid").textContent = currentSessionId || "-";
+}
+
+async function copySession(){
+  if (!currentSessionId) {
+    alert("Generate a QR first");
+    return;
+  }
+  await navigator.clipboard.writeText(currentSessionId);
+  alert("Session ID copied");
+}
+</script>
+</body>
+</html>

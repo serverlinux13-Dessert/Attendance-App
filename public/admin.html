@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<body>
+<h2>Admin Scanner</h2>
+<input id="session" placeholder="Paste session_id from QR JSON"/>
+<button onclick="scan()">Scan</button>
+<button id="startCamBtn">Start Camera Scan</button>
+<button id="stopCamBtn" disabled>Stop Camera</button>
+<p id="status">Camera idle.</p>
+<video id="preview" width="360" height="270" autoplay playsinline style="border:1px solid #ccc;"></video>
+<canvas id="captureCanvas" width="360" height="270" style="display:none;"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+<script src="/scanner.js"></script>
+</body>
+</html>
