@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin Dashboard</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+</head>
+<body data-role="admin">
+  <header class="topbar">
+    <h1>Admin Dashboard</h1>
+    <div>
+      <a href="/admin.html">Scanner Tool</a>
+      <button id="logoutBtn">Logout</button>
+    </div>
+  </header>
+  <main class="grid">
+    <section class="card"><h3>Summary</h3><div id="adminSummary" class="kpi-grid"></div></section>
+    <section class="card">
+      <h3>Attendance</h3>
+      <div class="row">
+        <input id="fromDate" type="date" />
+        <input id="toDate" type="date" />
+        <select id="statusFilter"><option value="">All Status</option><option>PRESENT</option><option>HALF_DAY</option><option>ABSENT</option></select>
+        <button id="reloadAttendance">Load</button>
+        <a id="exportLink" target="_blank">Export XLSX</a>
+      </div>
+      <div class="table-wrap"><table id="attendanceTable"><thead><tr><th>Emp</th><th>Date</th><th>Login</th><th>Logout</th><th>Hours</th><th>OT</th><th>Late</th><th>Early</th><th>Status</th></tr></thead><tbody></tbody></table></div>
+    </section>
+    <section class="card"><h3>Users</h3><form id="createUserForm" class="row wrap"><input id="uName" placeholder="Name" /><input id="uCode" placeholder="Code" /><input id="uPin" placeholder="PIN" /><select id="uRole"><option>EMPLOYEE</option><option>ADMIN</option></select><button type="submit">Add User</button></form><ul id="usersList" class="list"></ul></section>
+    <section class="card"><h3>Categories</h3><form id="createCategoryForm" class="row wrap"><input id="cName" placeholder="Name" /><input id="cReq" placeholder="Required Hours" /><input id="cHalf" placeholder="Half Day Hours" /><button type="submit">Add</button></form><ul id="categoryList" class="list"></ul></section>
+    <section class="card"><h3>Shifts</h3><form id="createShiftForm" class="row wrap"><input id="sName" placeholder="Name" /><input id="sStart" placeholder="09:00" /><input id="sEnd" placeholder="18:00" /><input id="sGrace" placeholder="15" /><button type="submit">Add</button></form><ul id="shiftList" class="list"></ul></section>
+    <section class="card"><h3>Edit Requests</h3><ul id="editReqList" class="list"></ul></section>
+    <section class="card"><h3>Audit Log</h3><ul id="auditList" class="list"></ul></section>
+  </main>
+  <script src="/static/dashboard.js"></script>
+</body>
+</html>

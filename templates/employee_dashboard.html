@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Employee Dashboard</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+</head>
+<body data-role="employee">
+  <header class="topbar">
+    <h1>Employee Dashboard</h1>
+    <div>
+      <a href="/employee.html">QR Tool</a>
+      <button id="logoutBtn">Logout</button>
+    </div>
+  </header>
+  <main class="grid one">
+    <section class="card"><h3>My Summary</h3><div id="empSummary" class="kpi-grid"></div></section>
+    <section class="card">
+      <h3>My Attendance</h3>
+      <div class="row"><input id="fromDate" type="date" /><input id="toDate" type="date" /><button id="reloadAttendance">Load</button></div>
+      <div class="table-wrap"><table id="attendanceTable"><thead><tr><th>ID</th><th>Date</th><th>Login</th><th>Logout</th><th>Hours</th><th>OT</th><th>Late</th><th>Early</th><th>Status</th></tr></thead><tbody></tbody></table></div>
+    </section>
+    <section class="card"><h3>Submit Edit Request</h3><form id="editReqForm" class="stack"><input id="attendanceId" placeholder="Attendance ID" /><input id="reqLogin" placeholder="YYYY-MM-DDTHH:MM:SS+05:30" /><input id="reqLogout" placeholder="YYYY-MM-DDTHH:MM:SS+05:30" /><input id="reqReason" placeholder="Reason" /><button type="submit">Submit</button></form></section>
+  </main>
+  <script src="/static/dashboard.js"></script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Attendance Login</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+</head>
+<body class="login-page">
+  <main class="card narrow">
+    <h1>Attendance Login</h1>
+    <p class="muted">Use employee code and 4-digit PIN</p>
+    <form id="loginForm" class="stack">
+      <label>Employee Code<input id="employee_code" placeholder="EMP001 or ADMIN001" required /></label>
+      <label>PIN<input id="pin" placeholder="1234" maxlength="4" required /></label>
+      <button type="submit">Login</button>
+    </form>
+    <p class="muted">Default Admin: <code>ADMIN001 / 1234</code></p>
+    <p class="muted">Default Employee: <code>EMP001 / 1111</code></p>
+  </main>
+  <script src="/static/dashboard.js"></script>
+</body>
+</html>

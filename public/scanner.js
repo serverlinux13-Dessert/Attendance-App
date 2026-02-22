@@ -21,6 +21,9 @@ function parseSessionId(rawValue) {
   if (!rawValue) return "";
   try {
     const obj = JSON.parse(rawValue);
+    if (obj && typeof obj.session_token === "string") {
+      return obj.session_token;
+    }
     if (obj && typeof obj.session_id === "string") {
       return obj.session_id;
     }
