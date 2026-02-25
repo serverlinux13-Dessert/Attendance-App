@@ -15,13 +15,12 @@
     </div>
   </header>
   <main class="grid one">
-    <section class="card"><h3>My Summary</h3><div id="empSummary" class="kpi-grid"></div></section>
-    <section class="card">
+    <section class="card span-4"><h3>My Summary</h3><div id="empSummary" class="kpi-grid"></div></section>
+    <section class="card span-8">
       <h3>My Attendance</h3>
-      <div class="row"><input id="fromDate" type="date" /><input id="toDate" type="date" /><button id="reloadAttendance">Load</button></div>
-      <div class="table-wrap"><table id="attendanceTable"><thead><tr><th>ID</th><th>Date</th><th>Login</th><th>Logout</th><th>Hours</th><th>OT</th><th>Late</th><th>Early</th><th>Status</th></tr></thead><tbody></tbody></table></div>
+      <div class="row wrap"><input id="fromDate" type="date" /><input id="toDate" type="date" /><button id="reloadAttendance">Load</button><a id="myExportLink" href="#" target="_blank" rel="noopener">Download XLSX</a></div>
+      <div class="table-wrap"><table id="attendanceTable"><thead><tr><th>ID</th><th>Date</th><th>Login</th><th>Logout</th><th>Hours</th><th>OT</th><th>Late</th><th>Break</th><th>Status</th></tr></thead><tbody></tbody></table></div>
     </section>
-    <section class="card"><h3>Submit Edit Request</h3><form id="editReqForm" class="stack"><input id="attendanceId" placeholder="Attendance ID" /><input id="reqLogin" placeholder="YYYY-MM-DDTHH:MM:SS+05:30" /><input id="reqLogout" placeholder="YYYY-MM-DDTHH:MM:SS+05:30" /><input id="reqReason" placeholder="Reason" /><button type="submit">Submit</button></form></section>
   </main>
   <script src="/static/dashboard.js"></script>
 </body>

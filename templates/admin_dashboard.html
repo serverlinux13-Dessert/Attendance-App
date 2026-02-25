@@ -10,28 +10,120 @@
   <header class="topbar">
     <h1>Admin Dashboard</h1>
     <div>
-      <a href="/admin.html">Scanner Tool</a>
+      <a href="/scanner">Scanner Tool</a>
       <button id="logoutBtn">Logout</button>
     </div>
   </header>
   <main class="grid">
-    <section class="card"><h3>Summary</h3><div id="adminSummary" class="kpi-grid"></div></section>
-    <section class="card">
-      <h3>Attendance</h3>
-      <div class="row">
+    <section class="card span-12">
+      <h3>Employee Attendance Summary</h3>
+      <div class="row wrap">
         <input id="fromDate" type="date" />
         <input id="toDate" type="date" />
-        <select id="statusFilter"><option value="">All Status</option><option>PRESENT</option><option>HALF_DAY</option><option>ABSENT</option></select>
-        <button id="reloadAttendance">Load</button>
-        <a id="exportLink" target="_blank">Export XLSX</a>
+        <input id="mergedEmployeeCode" placeholder="Employee Code (e.g. EMP001)" />
+        <button id="loadMergedBtn" type="button">Load</button>
+        <a id="mergedExportLink" target="_blank">Download XLSX</a>
       </div>
-      <div class="table-wrap"><table id="attendanceTable"><thead><tr><th>Emp</th><th>Date</th><th>Login</th><th>Logout</th><th>Hours</th><th>OT</th><th>Late</th><th>Early</th><th>Status</th></tr></thead><tbody></tbody></table></div>
+      <div id="mergedSummary" class="kpi-grid"></div>
+      <div class="table-wrap">
+        <table id="mergedAttendanceTable">
+          <thead><tr><th>Date</th><th>Login</th><th>Logout</th><th>Hours</th><th>OT</th><th>Late</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </section>
-    <section class="card"><h3>Users</h3><form id="createUserForm" class="row wrap"><input id="uName" placeholder="Name" /><input id="uCode" placeholder="Code" /><input id="uPin" placeholder="PIN" /><select id="uRole"><option>EMPLOYEE</option><option>ADMIN</option></select><button type="submit">Add User</button></form><ul id="usersList" class="list"></ul></section>
-    <section class="card"><h3>Categories</h3><form id="createCategoryForm" class="row wrap"><input id="cName" placeholder="Name" /><input id="cReq" placeholder="Required Hours" /><input id="cHalf" placeholder="Half Day Hours" /><button type="submit">Add</button></form><ul id="categoryList" class="list"></ul></section>
-    <section class="card"><h3>Shifts</h3><form id="createShiftForm" class="row wrap"><input id="sName" placeholder="Name" /><input id="sStart" placeholder="09:00" /><input id="sEnd" placeholder="18:00" /><input id="sGrace" placeholder="15" /><button type="submit">Add</button></form><ul id="shiftList" class="list"></ul></section>
-    <section class="card"><h3>Edit Requests</h3><ul id="editReqList" class="list"></ul></section>
-    <section class="card"><h3>Audit Log</h3><ul id="auditList" class="list"></ul></section>
+
+    <section class="card span-12">
+      <h3>Today's Attendance</h3>
+      <div class="row wrap">
+        <button id="reloadTodayAttendance" type="button">Refresh</button>
+      </div>
+      <div class="table-wrap">
+        <table id="todaysAttendanceTable">
+          <thead><tr><th>EMP_ID</th><th>Date</th><th>Login</th><th>Logout</th><th>Hours</th><th>OT</th><th>Late</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card span-6">
+      <h3>Edit Employee Details</h3>
+      <form id="adminEditAttendanceForm" class="stack">
+        <div class="row wrap">
+          <input id="editEmpCode" placeholder="Employee Code" />
+          <input id="editAttendanceDate" type="date" />
+          <button id="loadAttendanceEditBtn" type="button">Load Current</button>
+        </div>
+        <div class="row wrap">
+          <input id="editLoginTime" type="datetime-local" />
+          <input id="editLogoutTime" type="datetime-local" />
+          <select id="editBreakTaken">
+            <option value="">Break (No Change)</option>
+            <option value="1">Break Taken = Yes</option>
+            <option value="0">Break Taken = No</option>
+          </select>
+          <select id="editShiftId"></select>
+          <button type="submit">Save Changes</button>
+        </div>
+      </form>
+      <p class="muted">This updates attendance directly and recalculates metrics.</p>
+    </section>
+
+    <section class="card span-12">
+      <h3>Users</h3>
+      <form id="createUserForm" class="row wrap">
+        <input id="uName" placeholder="Name" />
+        <input id="uCode" placeholder="Code" />
+        <input id="uPin" placeholder="PIN" />
+        <select id="uRole"><option>EMPLOYEE</option><option>ADMIN</option></select>
+        <select id="uCategory"></select>
+        <select id="uShift"></select>
+        <button type="submit">Add User</button>
+      </form>
+      <div class="table-wrap">
+        <table id="usersTable">
+          <thead><tr><th>ID</th><th>Name</th><th>Code</th><th>PIN</th><th>Role</th><th>Category</th><th>Shift</th><th>Active</th><th>New PIN</th><th>Action</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card span-6">
+      <h3>Categories</h3>
+      <form id="createCategoryForm" class="row wrap">
+        <input id="cName" placeholder="Name" />
+        <input id="cReq" placeholder="Required Hours" />
+        <button type="submit">Add</button>
+      </form>
+      <div class="table-wrap">
+        <table id="categoryTable">
+          <thead><tr><th>ID</th><th>Name</th><th>Required Hours</th><th>Action</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card span-6">
+      <h3>Shifts</h3>
+      <form id="createShiftForm" class="row wrap">
+        <input id="sName" placeholder="Name" />
+        <input id="sStart" placeholder="09:00" />
+        <input id="sEnd" placeholder="18:00" />
+        <input id="sGrace" placeholder="15" />
+        <button type="submit">Add</button>
+      </form>
+      <form id="assignShiftForm" class="row wrap">
+        <input id="assignShiftEmpCode" placeholder="Employee Code" />
+        <select id="assignShiftId"></select>
+        <button type="submit">Assign Shift</button>
+      </form>
+      <div class="table-wrap">
+        <table id="shiftTable">
+          <thead><tr><th>ID</th><th>Name</th><th>Start</th><th>End</th><th>Grace</th><th>Action</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
   </main>
   <script src="/static/dashboard.js"></script>
 </body>

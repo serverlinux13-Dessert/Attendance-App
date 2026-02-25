@@ -53,6 +53,11 @@ def ensure_col(conn, table, col, ddl):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
 
 
+def table_exists(conn, table):
+    r = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+    return r is not None
+
+
 def now_ist():
     return datetime.now(IST)
 
@@ -127,7 +132,6 @@ def user_profile(conn, user_id):
         SELECT u.*, COALESCE(c.required_hours,9) required_hours,
                COALESCE(s.start_time,'09:00') shift_start, COALESCE(s.end_time,'18:00') shift_end,
                COALESCE(s.grace_minutes,15) grace_minutes,
-               COALESCE(s.half_day_threshold,4.5) half_day_threshold,
                COALESCE(c.name,'General') category_name, COALESCE(s.name,'General Shift') shift_name
         FROM users u
         LEFT JOIN employee_categories c ON c.id=u.category_id
@@ -149,74 +153,157 @@ def calc_metrics(login_iso, logout_iso, profile):
     if et <= st:
         et += timedelta(days=1)
     late = int(login > st + timedelta(minutes=int(profile["grace_minutes"] or 0)))
-    early = int(logout < et)
-    half = int(total_hours < float(profile["half_day_threshold"] or 4.5))
-    status = "HALF_DAY" if half else "PRESENT"
+    status = "PRESENT"
     return {
         "total_hours": round(total_hours, 4),
         "overtime": round(ot, 4),
         "late_mark": late,
-        "early_leaving": early,
-        "half_day": half,
         "status": status,
     }
 
 
-def audit(conn, attendance_id, action, actor=None, old=None, new=None):
-    conn.execute(
-        "INSERT INTO attendance_audit_log (attendance_id,actor_user_id,action,old_values,new_values,created_at) VALUES (?,?,?,?,?,?)",
-        (
-            attendance_id,
-            actor,
-            action,
-            json.dumps(old) if old is not None else None,
-            json.dumps(new) if new is not None else None,
-            now_iso(),
-        ),
-    )
+def rebuild_schema_if_needed(conn):
+    conn.execute("DROP INDEX IF EXISTS idx_edit_req_status_created")
+    conn.execute("DROP TABLE IF EXISTS attendance_edit_requests")
+    conn.execute("DROP TABLE IF EXISTS attendance_audit_log")
+
+    if table_exists(conn, "employee_categories") and has_col(conn, "employee_categories", "half_day_hours"):
+        conn.execute("ALTER TABLE employee_categories RENAME TO employee_categories_old")
+        conn.execute(
+            """
+            CREATE TABLE employee_categories(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                required_hours REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO employee_categories (id,name,required_hours)
+            SELECT id,name,required_hours FROM employee_categories_old
+            """
+        )
+        conn.execute("DROP TABLE employee_categories_old")
+
+    if table_exists(conn, "shifts") and has_col(conn, "shifts", "half_day_threshold"):
+        conn.execute("ALTER TABLE shifts RENAME TO shifts_old")
+        conn.execute(
+            """
+            CREATE TABLE shifts(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time TEXT NOT NULL,
+                grace_minutes INTEGER NOT NULL DEFAULT 15
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO shifts (id,name,start_time,end_time,grace_minutes)
+            SELECT id,name,start_time,end_time,COALESCE(grace_minutes,15) FROM shifts_old
+            """
+        )
+        conn.execute("DROP TABLE shifts_old")
+
+    if table_exists(conn, "attendance") and (has_col(conn, "attendance", "early_leaving") or has_col(conn, "attendance", "half_day")):
+        conn.execute("ALTER TABLE attendance RENAME TO attendance_old")
+        conn.execute(
+            """
+            CREATE TABLE attendance(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                attendance_date TEXT NOT NULL,
+                login_time TEXT,
+                logout_time TEXT,
+                total_hours REAL,
+                overtime REAL,
+                late_mark INTEGER NOT NULL DEFAULT 0,
+                break_taken INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'PRESENT',
+                system_logout INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT,
+                UNIQUE(user_id,attendance_date)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO attendance (
+                id,user_id,attendance_date,login_time,logout_time,total_hours,overtime,late_mark,break_taken,status,system_logout,created_at,updated_at
+            )
+            WITH normalized AS (
+                SELECT *,
+                       COALESCE(attendance_date,substr(login_time,1,10),substr(created_at,1,10),?) normalized_date
+                FROM attendance_old
+            ),
+            ranked AS (
+                SELECT *,
+                       ROW_NUMBER() OVER (PARTITION BY user_id,normalized_date ORDER BY id DESC) rn
+                FROM normalized
+            )
+            SELECT
+                id,user_id,normalized_date,login_time,logout_time,total_hours,overtime,
+                COALESCE(late_mark,0),
+                COALESCE(break_taken,0),
+                CASE WHEN status='ABSENT' THEN 'ABSENT' ELSE 'PRESENT' END,
+                COALESCE(system_logout,0),
+                COALESCE(created_at,login_time,?),
+                COALESCE(updated_at,logout_time,login_time,?)
+            FROM ranked
+            WHERE rn=1
+            """,
+            (now_ist().date().isoformat(), now_iso(), now_iso()),
+        )
+        conn.execute("DROP TABLE attendance_old")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id,attendance_date)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_status_date ON attendance(status,attendance_date)")
+
+    conn.execute("DROP INDEX IF EXISTS idx_edit_req_status_created")
+
 
 def init_db():
     with conn_db() as conn:
         conn.executescript(
             """
-            CREATE TABLE IF NOT EXISTS employee_categories(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,required_hours REAL NOT NULL,half_day_hours REAL NOT NULL DEFAULT 4.5);
-            CREATE TABLE IF NOT EXISTS shifts(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,start_time TEXT NOT NULL,end_time TEXT NOT NULL,grace_minutes INTEGER NOT NULL DEFAULT 15,half_day_threshold REAL NOT NULL DEFAULT 4.5);
+            CREATE TABLE IF NOT EXISTS employee_categories(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,required_hours REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS shifts(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,start_time TEXT NOT NULL,end_time TEXT NOT NULL,grace_minutes INTEGER NOT NULL DEFAULT 15);
             CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,name TEXT,role TEXT NOT NULL DEFAULT 'EMPLOYEE',employee_code TEXT,pin_hash TEXT,category_id INTEGER,shift_id INTEGER,category_hours INTEGER,active INTEGER NOT NULL DEFAULT 1,created_at TEXT);
-            CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,attendance_date TEXT NOT NULL,login_time TEXT,logout_time TEXT,total_hours REAL,overtime REAL,late_mark INTEGER NOT NULL DEFAULT 0,early_leaving INTEGER NOT NULL DEFAULT 0,half_day INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'PRESENT',system_logout INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT,UNIQUE(user_id,attendance_date));
+            CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,attendance_date TEXT NOT NULL,login_time TEXT,logout_time TEXT,total_hours REAL,overtime REAL,late_mark INTEGER NOT NULL DEFAULT 0,break_taken INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'PRESENT',system_logout INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT,UNIQUE(user_id,attendance_date));
             CREATE TABLE IF NOT EXISTS qr_sessions(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,purpose TEXT NOT NULL,expires_at INTEGER NOT NULL,used INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS attendance_edit_requests(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,attendance_id INTEGER NOT NULL,requested_login_time TEXT,requested_logout_time TEXT,reason TEXT,status TEXT NOT NULL DEFAULT 'PENDING',reviewed_by INTEGER,reviewed_at TEXT,created_at TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS attendance_audit_log(id INTEGER PRIMARY KEY AUTOINCREMENT,attendance_id INTEGER,actor_user_id INTEGER,action TEXT NOT NULL,old_values TEXT,new_values TEXT,created_at TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id,attendance_date);
             CREATE INDEX IF NOT EXISTS idx_attendance_status_date ON attendance(status,attendance_date);
-            CREATE INDEX IF NOT EXISTS idx_edit_req_status_created ON attendance_edit_requests(status,created_at);
             """
         )
+        rebuild_schema_if_needed(conn)
         ensure_col(conn, "users", "role", "TEXT NOT NULL DEFAULT 'EMPLOYEE'")
         ensure_col(conn, "users", "employee_code", "TEXT")
         ensure_col(conn, "users", "pin_hash", "TEXT")
+        ensure_col(conn, "users", "pin_plain", "TEXT")
         ensure_col(conn, "users", "category_id", "INTEGER")
         ensure_col(conn, "users", "shift_id", "INTEGER")
         ensure_col(conn, "users", "active", "INTEGER NOT NULL DEFAULT 1")
         ensure_col(conn, "users", "created_at", "TEXT")
         ensure_col(conn, "attendance", "attendance_date", "TEXT")
         ensure_col(conn, "attendance", "late_mark", "INTEGER NOT NULL DEFAULT 0")
-        ensure_col(conn, "attendance", "early_leaving", "INTEGER NOT NULL DEFAULT 0")
-        ensure_col(conn, "attendance", "half_day", "INTEGER NOT NULL DEFAULT 0")
+        ensure_col(conn, "attendance", "break_taken", "INTEGER NOT NULL DEFAULT 0")
         ensure_col(conn, "attendance", "status", "TEXT NOT NULL DEFAULT 'PRESENT'")
         ensure_col(conn, "attendance", "system_logout", "INTEGER NOT NULL DEFAULT 0")
         ensure_col(conn, "attendance", "created_at", "TEXT")
         ensure_col(conn, "attendance", "updated_at", "TEXT")
         ensure_col(conn, "qr_sessions", "created_at", "TEXT")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_employee_code ON users(employee_code)")
-        conn.execute("INSERT OR IGNORE INTO employee_categories (id,name,required_hours,half_day_hours) VALUES (1,'General',9,4.5)")
-        conn.execute("INSERT OR IGNORE INTO shifts (id,name,start_time,end_time,grace_minutes,half_day_threshold) VALUES (1,'General Shift','09:00','18:00',15,4.5)")
+        conn.execute("INSERT OR IGNORE INTO employee_categories (id,name,required_hours) VALUES (1,'General',9)")
+        conn.execute("INSERT OR IGNORE INTO shifts (id,name,start_time,end_time,grace_minutes) VALUES (1,'General Shift','09:00','18:00',15)")
         conn.execute("INSERT OR IGNORE INTO users (id,name,role,employee_code,category_id,shift_id,category_hours,active,created_at) VALUES (1,'Employee1','EMPLOYEE','EMP001',1,1,9,1,?)", (now_iso(),))
         conn.execute("INSERT OR IGNORE INTO users (id,name,role,employee_code,category_id,shift_id,category_hours,active,created_at) VALUES (999,'Admin','ADMIN','ADMIN001',1,1,9,1,?)", (now_iso(),))
         users = conn.execute("SELECT id,role,pin_hash,employee_code FROM users").fetchall()
         for u in users:
             if not u["pin_hash"]:
                 pin = DEFAULT_ADMIN_PIN if u["role"] == "ADMIN" else DEFAULT_EMPLOYEE_PIN
-                conn.execute("UPDATE users SET pin_hash=? WHERE id=?", (generate_password_hash(pin), u["id"]))
+                conn.execute("UPDATE users SET pin_hash=?,pin_plain=? WHERE id=?", (generate_password_hash(pin), pin, u["id"]))
             if not u["employee_code"]:
                 prefix = "ADMIN" if u["role"] == "ADMIN" else "EMP"
                 conn.execute("UPDATE users SET employee_code=? WHERE id=?", (f"{prefix}{int(u['id']):03d}", u["id"]))
@@ -287,7 +374,15 @@ def health():
 
 @app.get("/admin.html")
 def admin_tool_page():
-    return send_from_directory(PUBLIC_DIR, "admin.html")
+    return redirect(url_for("scanner_page"))
+
+
+@app.get("/scanner")
+def scanner_page():
+    chk = office_check()
+    if chk:
+        return chk
+    return send_from_directory(PUBLIC_DIR, "scanner.html")
 
 
 @app.get("/employee.html")
@@ -434,11 +529,8 @@ def scan_qr():
 
             if today and not today["login_time"]:
                 conn.execute("UPDATE attendance SET login_time=?,status='PRESENT',system_logout=0,updated_at=? WHERE id=?", (niso, niso, today["id"]))
-                aid = int(today["id"])
             else:
-                cur = conn.execute("INSERT INTO attendance (user_id,attendance_date,login_time,status,created_at,updated_at) VALUES (?,?,?,'PRESENT',?,?)", (uid, d, niso, niso, niso))
-                aid = int(cur.lastrowid)
-            audit(conn, aid, "LOGIN_SCANNED", None, None, {"login_time": niso, "session_token": token})
+                conn.execute("INSERT INTO attendance (user_id,attendance_date,login_time,status,created_at,updated_at) VALUES (?,?,?,'PRESENT',?,?)", (uid, d, niso, niso, niso))
             return jsonify({"message": "Login Recorded"})
 
         if purpose == "logout":
@@ -447,8 +539,7 @@ def scan_qr():
                 return jsonify({"message": "No login found"}), 400
             profile = user_profile(conn, uid)
             m = calc_metrics(rec["login_time"], niso, profile)
-            conn.execute("UPDATE attendance SET logout_time=?,total_hours=?,overtime=?,late_mark=?,early_leaving=?,half_day=?,status=?,updated_at=? WHERE id=?", (niso, m["total_hours"], m["overtime"], m["late_mark"], m["early_leaving"], m["half_day"], m["status"], niso, rec["id"]))
-            audit(conn, int(rec["id"]), "LOGOUT_SCANNED", None, {"logout_time": None}, {"logout_time": niso, **m})
+            conn.execute("UPDATE attendance SET logout_time=?,total_hours=?,overtime=?,late_mark=?,status=?,updated_at=? WHERE id=?", (niso, m["total_hours"], m["overtime"], m["late_mark"], m["status"], niso, rec["id"]))
             return jsonify({"message": "Logout Recorded", "metrics": m})
 
         return jsonify({"message": "Invalid or expired QR"}), 400
@@ -474,8 +565,7 @@ def midnight_close():
             uid = int(u["id"])
             row = conn.execute("SELECT * FROM attendance WHERE user_id=? AND attendance_date=?", (uid, target.isoformat())).fetchone()
             if not row:
-                cur = conn.execute("INSERT INTO attendance (user_id,attendance_date,status,created_at,updated_at) VALUES (?,?,'ABSENT',?,?)", (uid, target.isoformat(), now_iso(), now_iso()))
-                audit(conn, int(cur.lastrowid), "AUTO_ABSENT_MARKED", None, None, {"status": "ABSENT"})
+                conn.execute("INSERT INTO attendance (user_id,attendance_date,status,created_at,updated_at) VALUES (?,?,'ABSENT',?,?)", (uid, target.isoformat(), now_iso(), now_iso()))
                 absent += 1
                 continue
             if row["login_time"] and not row["logout_time"]:
@@ -486,8 +576,7 @@ def midnight_close():
                     et += timedelta(days=1)
                 auto_t = et.isoformat()
                 m = calc_metrics(row["login_time"], auto_t, p)
-                conn.execute("UPDATE attendance SET logout_time=?,total_hours=?,overtime=?,late_mark=?,early_leaving=?,half_day=?,status=?,system_logout=1,updated_at=? WHERE id=?", (auto_t, m["total_hours"], m["overtime"], m["late_mark"], m["early_leaving"], m["half_day"], m["status"], now_iso(), row["id"]))
-                audit(conn, int(row["id"]), "AUTO_SYSTEM_LOGOUT", None, {"logout_time": None}, {"logout_time": auto_t, **m})
+                conn.execute("UPDATE attendance SET logout_time=?,total_hours=?,overtime=?,late_mark=?,status=?,system_logout=1,updated_at=? WHERE id=?", (auto_t, m["total_hours"], m["overtime"], m["late_mark"], m["status"], now_iso(), row["id"]))
                 auto_logout += 1
 
     return jsonify({"message": "Midnight close completed", "attendance_date": target.isoformat(), "absent_marked": absent, "system_logout_done": auto_logout})
@@ -500,7 +589,7 @@ def parse_filters():
     status = request.args.get("status")
     if status:
         status = status.strip().upper()
-        if status not in {"PRESENT", "HALF_DAY", "ABSENT", "LEAVE"}:
+        if status not in {"PRESENT", "ABSENT"}:
             raise ValueError("Invalid status")
     uid = int(request.args.get("user_id")) if request.args.get("user_id") else None
     sid = int(request.args.get("shift_id")) if request.args.get("shift_id") else None
@@ -562,22 +651,218 @@ def admin_summary():
     with conn_db() as conn:
         row = conn.execute(
             """
-            SELECT COUNT(*) total,
-            SUM(CASE WHEN status='PRESENT' THEN 1 ELSE 0 END) present_count,
-            SUM(CASE WHEN status='HALF_DAY' THEN 1 ELSE 0 END) half_day_count,
+            SELECT COUNT(*) total_days_worked,
             SUM(CASE WHEN status='ABSENT' THEN 1 ELSE 0 END) absent_count,
             SUM(CASE WHEN late_mark=1 THEN 1 ELSE 0 END) late_count,
-            SUM(CASE WHEN early_leaving=1 THEN 1 ELSE 0 END) early_count,
             SUM(COALESCE(total_hours,0)) total_hours,
             SUM(COALESCE(overtime,0)) overtime_hours
             FROM attendance WHERE attendance_date BETWEEN ? AND ?
             """,
             (dfrom.isoformat(), dto.isoformat()),
         ).fetchone()
-        pending = conn.execute("SELECT COUNT(*) cnt FROM attendance_edit_requests WHERE status='PENDING'").fetchone()["cnt"]
-    out = dict(row)
-    out["pending_requests"] = pending
-    return jsonify(out)
+    return jsonify(dict(row))
+
+
+@app.get("/api/admin/employee-summary")
+@api_guard("ADMIN")
+def admin_employee_summary():
+    code = str(request.args.get("employee_code", "")).strip()
+    if not code:
+        return jsonify({"message": "employee_code is required"}), 400
+    try:
+        dfrom, dto = resolve_date_range(request.args.get("from"), request.args.get("to"))
+    except Exception as e:
+        return jsonify({"message": str(e)}), 400
+
+    with conn_db() as conn:
+        employee = conn.execute(
+            """
+            SELECT u.id,u.name,u.employee_code
+            FROM users u
+            WHERE u.employee_code=?
+            """,
+            (code,),
+        ).fetchone()
+        if not employee:
+            return jsonify({"message": "Employee not found"}), 404
+
+        summary = conn.execute(
+            """
+            SELECT
+            SUM(CASE WHEN status='ABSENT' THEN 1 ELSE 0 END) absent_count,
+            SUM(CASE WHEN login_time IS NOT NULL THEN 1 ELSE 0 END) total_days_worked,
+            SUM(CASE WHEN late_mark=1 THEN 1 ELSE 0 END) late_count,
+            SUM(COALESCE(total_hours,0)) total_hours,
+            SUM(COALESCE(overtime,0)) overtime_hours
+            FROM attendance WHERE user_id=? AND attendance_date BETWEEN ? AND ?
+            """,
+            (employee["id"], dfrom.isoformat(), dto.isoformat()),
+        ).fetchone()
+        rows = conn.execute(
+            """
+            SELECT id,attendance_date,login_time,logout_time,total_hours,overtime,late_mark,break_taken,status
+            FROM attendance WHERE user_id=? AND attendance_date BETWEEN ? AND ?
+            ORDER BY attendance_date DESC,id DESC
+            """,
+            (employee["id"], dfrom.isoformat(), dto.isoformat()),
+        ).fetchall()
+
+    return jsonify({"employee": dict(employee), "summary": dict(summary), "attendance": to_items(rows)})
+
+
+@app.get("/api/admin/employee-summary.xlsx")
+@api_guard("ADMIN")
+def admin_employee_summary_xlsx():
+    try:
+        from openpyxl import Workbook
+    except ImportError:
+        return jsonify({"message": "openpyxl is required for export"}), 500
+
+    code = str(request.args.get("employee_code", "")).strip()
+    if not code:
+        return jsonify({"message": "employee_code is required"}), 400
+    try:
+        dfrom, dto = resolve_date_range(request.args.get("from"), request.args.get("to"))
+    except Exception as e:
+        return jsonify({"message": str(e)}), 400
+
+    with conn_db() as conn:
+        employee = conn.execute(
+            """
+            SELECT u.id,u.name,u.employee_code
+            FROM users u
+            WHERE u.employee_code=?
+            """,
+            (code,),
+        ).fetchone()
+        if not employee:
+            return jsonify({"message": "Employee not found"}), 404
+
+        summary = conn.execute(
+            """
+            SELECT
+            SUM(CASE WHEN status='ABSENT' THEN 1 ELSE 0 END) absent_count,
+            SUM(CASE WHEN login_time IS NOT NULL THEN 1 ELSE 0 END) total_days_worked,
+            SUM(CASE WHEN late_mark=1 THEN 1 ELSE 0 END) late_count,
+            SUM(COALESCE(total_hours,0)) total_hours,
+            SUM(COALESCE(overtime,0)) overtime_hours
+            FROM attendance WHERE user_id=? AND attendance_date BETWEEN ? AND ?
+            """,
+            (employee["id"], dfrom.isoformat(), dto.isoformat()),
+        ).fetchone()
+        rows = conn.execute(
+            """
+            SELECT attendance_date,login_time,logout_time,total_hours,overtime,late_mark,break_taken,status
+            FROM attendance WHERE user_id=? AND attendance_date BETWEEN ? AND ?
+            ORDER BY attendance_date DESC,id DESC
+            """,
+            (employee["id"], dfrom.isoformat(), dto.isoformat()),
+        ).fetchall()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Employee Summary"
+    ws.append(["Employee Name", employee["name"]])
+    ws.append(["Employee Code", employee["employee_code"]])
+    ws.append([])
+    ws.append(["From", dfrom.isoformat(), "To", dto.isoformat()])
+    ws.append([])
+    ws.append(["Absent", "Total Days Worked", "Late", "Total Hours", "Overtime"])
+    ws.append([summary["absent_count"], summary["total_days_worked"], summary["late_count"], summary["total_hours"], summary["overtime_hours"]])
+    ws.append([])
+    ws.append(["Date", "Login", "Logout", "Hours", "OT", "Late", "Break", "Status"])
+    for r in rows:
+        ws.append([r["attendance_date"], r["login_time"], r["logout_time"], r["total_hours"], r["overtime"], r["late_mark"], r["break_taken"], r["status"]])
+
+    out = io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return send_file(out, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name=f"employee_summary_{code}_{dfrom.isoformat()}_{dto.isoformat()}.xlsx")
+
+
+@app.post("/api/admin/attendance/edit")
+@api_guard("ADMIN")
+def admin_attendance_edit():
+    d = request.get_json(silent=True) or {}
+    code = str(d.get("employee_code", "")).strip()
+    att_date = str(d.get("attendance_date", "")).strip()
+    if not code or not att_date:
+        return jsonify({"message": "employee_code and attendance_date are required"}), 400
+    try:
+        date.fromisoformat(att_date)
+    except ValueError:
+        return jsonify({"message": "attendance_date must be YYYY-MM-DD"}), 400
+
+    has_login = "login_time" in d
+    has_logout = "logout_time" in d
+    has_break = "break_taken" in d
+    has_shift = "shift_id" in d
+    if not any([has_login, has_logout, has_break, has_shift]):
+        return jsonify({"message": "No fields to update"}), 400
+    shift_id = None
+    if has_shift:
+        try:
+            shift_id = int(d.get("shift_id"))
+        except Exception:
+            return jsonify({"message": "shift_id must be an integer"}), 400
+
+    with conn_db() as conn:
+        user = conn.execute("SELECT id,employee_code,shift_id FROM users WHERE employee_code=?", (code,)).fetchone()
+        if not user:
+            return jsonify({"message": "Employee not found"}), 404
+        if has_shift:
+            sh = conn.execute("SELECT id FROM shifts WHERE id=?", (shift_id,)).fetchone()
+            if not sh:
+                return jsonify({"message": "Shift not found"}), 404
+        row = conn.execute("SELECT * FROM attendance WHERE user_id=? AND attendance_date=? ORDER BY id DESC LIMIT 1", (user["id"], att_date)).fetchone()
+        if not row:
+            return jsonify({"message": "Attendance not found for selected date"}), 404
+
+        fields, params = [], []
+        if has_login:
+            login_time = d.get("login_time")
+            if login_time:
+                parse_dt(login_time)
+            fields.append("login_time=?")
+            params.append(login_time)
+        if has_logout:
+            logout_time = d.get("logout_time")
+            if logout_time:
+                parse_dt(logout_time)
+            fields.append("logout_time=?")
+            params.append(logout_time)
+        if has_break:
+            b = d.get("break_taken")
+            if isinstance(b, bool):
+                break_taken = int(b)
+            elif isinstance(b, (int, float)) and int(b) in {0, 1}:
+                break_taken = int(b)
+            elif isinstance(b, str) and b.strip().lower() in {"0", "1", "true", "false", "yes", "no"}:
+                break_taken = 1 if b.strip().lower() in {"1", "true", "yes"} else 0
+            else:
+                return jsonify({"message": "break_taken must be true/false"}), 400
+            fields.append("break_taken=?")
+            params.append(break_taken)
+
+        fields.append("updated_at=?")
+        params.append(now_iso())
+        params.append(row["id"])
+        conn.execute(f"UPDATE attendance SET {', '.join(fields)} WHERE id=?", tuple(params))
+
+        if has_shift:
+            conn.execute("UPDATE users SET shift_id=? WHERE id=?", (shift_id, user["id"]))
+
+        latest = conn.execute("SELECT * FROM attendance WHERE id=?", (row["id"],)).fetchone()
+        if latest["login_time"] and latest["logout_time"]:
+            recalc_attendance(conn, int(row["id"]))
+        else:
+            conn.execute(
+                "UPDATE attendance SET total_hours=NULL,overtime=NULL,late_mark=0,status='PRESENT',updated_at=? WHERE id=?",
+                (now_iso(), row["id"]),
+            )
+        new = dict(conn.execute("SELECT * FROM attendance WHERE id=?", (row["id"],)).fetchone())
+        conn.commit()
+    return jsonify({"message": "Attendance updated", "item": new})
 
 
 @app.get("/api/employee/my-attendance")
@@ -610,27 +895,60 @@ def my_summary():
             """
             SELECT COUNT(*) total_days,
             SUM(CASE WHEN status='PRESENT' THEN 1 ELSE 0 END) present_count,
-            SUM(CASE WHEN status='HALF_DAY' THEN 1 ELSE 0 END) half_day_count,
             SUM(CASE WHEN status='ABSENT' THEN 1 ELSE 0 END) absent_count,
             SUM(CASE WHEN late_mark=1 THEN 1 ELSE 0 END) late_count,
-            SUM(CASE WHEN early_leaving=1 THEN 1 ELSE 0 END) early_count,
+            SUM(CASE WHEN break_taken=1 THEN 1 ELSE 0 END) break_taken_days,
             SUM(COALESCE(total_hours,0)) total_hours,
             SUM(COALESCE(overtime,0)) overtime_hours
             FROM attendance WHERE user_id=? AND attendance_date BETWEEN ? AND ?
             """,
             (u["id"], dfrom.isoformat(), dto.isoformat()),
         ).fetchone()
-        today = conn.execute("SELECT status,login_time,logout_time,total_hours,overtime FROM attendance WHERE user_id=? AND attendance_date=? ORDER BY id DESC LIMIT 1", (u["id"], now_ist().date().isoformat())).fetchone()
-    out = dict(row)
-    out["today"] = dict(today) if today else None
-    return jsonify(out)
+    return jsonify(dict(row))
+
+
+@app.get("/api/employee/today-break")
+@api_guard("EMPLOYEE")
+def employee_today_break():
+    u = request.current_user
+    today = now_ist().date().isoformat()
+    with conn_db() as conn:
+        row = conn.execute("SELECT id,attendance_date,break_taken FROM attendance WHERE user_id=? AND attendance_date=? ORDER BY id DESC LIMIT 1", (u["id"], today)).fetchone()
+    if not row:
+        return jsonify({"attendance_date": today, "break_taken": None, "can_update": False})
+    return jsonify({"attendance_date": row["attendance_date"], "break_taken": int(row["break_taken"] or 0), "can_update": True})
+
+
+@app.post("/api/employee/today-break")
+@api_guard("EMPLOYEE")
+def employee_today_break_update():
+    u = request.current_user
+    d = request.get_json(silent=True) or {}
+    raw = d.get("break_taken")
+    if isinstance(raw, bool):
+        break_taken = int(raw)
+    elif isinstance(raw, (int, float)) and int(raw) in {0, 1}:
+        break_taken = int(raw)
+    elif isinstance(raw, str) and raw.strip().lower() in {"0", "1", "true", "false", "yes", "no"}:
+        break_taken = 1 if raw.strip().lower() in {"1", "true", "yes"} else 0
+    else:
+        return jsonify({"message": "break_taken must be true/false"}), 400
+
+    today = now_ist().date().isoformat()
+    with conn_db() as conn:
+        row = conn.execute("SELECT * FROM attendance WHERE user_id=? AND attendance_date=? ORDER BY id DESC LIMIT 1", (u["id"], today)).fetchone()
+        if not row:
+            return jsonify({"message": "No attendance record found for today"}), 400
+        conn.execute("UPDATE attendance SET break_taken=?,updated_at=? WHERE id=?", (break_taken, now_iso(), row["id"]))
+        conn.commit()
+    return jsonify({"message": "Break status updated", "attendance_date": today, "break_taken": break_taken})
 
 
 @app.get("/api/admin/users")
 @api_guard("ADMIN")
 def users_list():
     with conn_db() as conn:
-        rows = conn.execute("SELECT u.id,u.name,u.role,u.employee_code,u.active,u.created_at,u.category_id,u.shift_id,COALESCE(c.name,'General') category_name,COALESCE(s.name,'General Shift') shift_name FROM users u LEFT JOIN employee_categories c ON c.id=u.category_id LEFT JOIN shifts s ON s.id=u.shift_id ORDER BY u.id").fetchall()
+        rows = conn.execute("SELECT u.id,u.name,u.role,u.employee_code,u.pin_plain,u.active,u.created_at,u.category_id,u.shift_id,COALESCE(c.name,'General') category_name,COALESCE(s.name,'General Shift') shift_name FROM users u LEFT JOIN employee_categories c ON c.id=u.category_id LEFT JOIN shifts s ON s.id=u.shift_id ORDER BY u.id").fetchall()
     items = [dict(r) for r in rows]
     for i in items:
         i["pin_set"] = True
@@ -652,7 +970,7 @@ def users_create():
     active = int(d.get("active", 1))
     with conn_db() as conn:
         try:
-            cur = conn.execute("INSERT INTO users (name,role,employee_code,pin_hash,category_id,shift_id,category_hours,active,created_at) VALUES (?,?,?,?,?,?,9,?,?)", (name, role, code, generate_password_hash(pin), cid, sid, active, now_iso()))
+            cur = conn.execute("INSERT INTO users (name,role,employee_code,pin_hash,pin_plain,category_id,shift_id,category_hours,active,created_at) VALUES (?,?,?,?,?,?,?,9,?,?)", (name, role, code, generate_password_hash(pin), pin, cid, sid, active, now_iso()))
             conn.commit()
         except sqlite3.IntegrityError as e:
             return jsonify({"message": str(e)}), 400
@@ -679,6 +997,7 @@ def users_update(user_id):
         pin = str(d.get("pin", "")).strip()
         if not valid_pin(pin): return jsonify({"message": "PIN must be 4 digits"}), 400
         put("pin_hash", generate_password_hash(pin))
+        put("pin_plain", pin)
     if not fields: return jsonify({"message": "No fields to update"}), 400
     params.append(user_id)
     with conn_db() as conn:
@@ -703,12 +1022,12 @@ def categories_list():
 def categories_create():
     d = request.get_json(silent=True) or {}
     try:
-        name = str(d.get("name", "")).strip(); req = float(d.get("required_hours")); half = float(d.get("half_day_hours", 4.5))
+        name = str(d.get("name", "")).strip(); req = float(d.get("required_hours"))
     except Exception:
         return jsonify({"message": "Invalid category payload"}), 400
     with conn_db() as conn:
         try:
-            cur = conn.execute("INSERT INTO employee_categories (name,required_hours,half_day_hours) VALUES (?,?,?)", (name, req, half)); conn.commit()
+            cur = conn.execute("INSERT INTO employee_categories (name,required_hours) VALUES (?,?)", (name, req)); conn.commit()
         except sqlite3.IntegrityError as e:
             return jsonify({"message": str(e)}), 400
     return jsonify({"message": "Category created", "id": int(cur.lastrowid)})
@@ -721,7 +1040,6 @@ def categories_update(category_id):
     fields, params = [], []
     if "name" in d: fields.append("name=?"); params.append(str(d.get("name", "")).strip())
     if "required_hours" in d: fields.append("required_hours=?"); params.append(float(d.get("required_hours")))
-    if "half_day_hours" in d: fields.append("half_day_hours=?"); params.append(float(d.get("half_day_hours")))
     if not fields: return jsonify({"message": "No fields to update"}), 400
     params.append(category_id)
     with conn_db() as conn:
@@ -745,12 +1063,12 @@ def shifts_list():
 def shifts_create():
     d = request.get_json(silent=True) or {}
     try:
-        name = str(d.get("name", "")).strip(); st = str(d.get("start_time", "")).strip(); et = str(d.get("end_time", "")).strip(); g = int(d.get("grace_minutes", 15)); h = float(d.get("half_day_threshold", 4.5)); time.fromisoformat(st); time.fromisoformat(et)
+        name = str(d.get("name", "")).strip(); st = str(d.get("start_time", "")).strip(); et = str(d.get("end_time", "")).strip(); g = int(d.get("grace_minutes", 15)); time.fromisoformat(st); time.fromisoformat(et)
     except Exception:
         return jsonify({"message": "Invalid shift payload"}), 400
     with conn_db() as conn:
         try:
-            cur = conn.execute("INSERT INTO shifts (name,start_time,end_time,grace_minutes,half_day_threshold) VALUES (?,?,?,?,?)", (name, st, et, g, h)); conn.commit()
+            cur = conn.execute("INSERT INTO shifts (name,start_time,end_time,grace_minutes) VALUES (?,?,?,?)", (name, st, et, g)); conn.commit()
         except sqlite3.IntegrityError as e:
             return jsonify({"message": str(e)}), 400
     return jsonify({"message": "Shift created", "id": int(cur.lastrowid)})
@@ -765,7 +1083,6 @@ def shifts_update(shift_id):
     if "start_time" in d: time.fromisoformat(str(d.get("start_time"))); fields.append("start_time=?"); params.append(str(d.get("start_time")))
     if "end_time" in d: time.fromisoformat(str(d.get("end_time"))); fields.append("end_time=?"); params.append(str(d.get("end_time")))
     if "grace_minutes" in d: fields.append("grace_minutes=?"); params.append(int(d.get("grace_minutes")))
-    if "half_day_threshold" in d: fields.append("half_day_threshold=?"); params.append(float(d.get("half_day_threshold")))
     if not fields: return jsonify({"message": "No fields to update"}), 400
     params.append(shift_id)
     with conn_db() as conn:
@@ -775,49 +1092,6 @@ def shifts_update(shift_id):
             return jsonify({"message": str(e)}), 400
     return jsonify({"message": "Shift updated"})
 
-@app.post("/api/employee/edit-requests")
-@api_guard("EMPLOYEE")
-def edit_req_create():
-    u = request.current_user
-    d = request.get_json(silent=True) or {}
-    try:
-        attendance_id = int(d.get("attendance_id"))
-    except Exception:
-        return jsonify({"message": "attendance_id is required"}), 400
-    r_login = d.get("requested_login_time")
-    r_logout = d.get("requested_logout_time")
-    reason = str(d.get("reason", "")).strip()
-    if not r_login and not r_logout:
-        return jsonify({"message": "At least one requested time is required"}), 400
-    if r_login:
-        parse_dt(r_login)
-    if r_logout:
-        parse_dt(r_logout)
-
-    with conn_db() as conn:
-        a = conn.execute("SELECT * FROM attendance WHERE id=? AND user_id=?", (attendance_id, u["id"])).fetchone()
-        if not a:
-            return jsonify({"message": "Attendance not found"}), 404
-        cur = conn.execute("INSERT INTO attendance_edit_requests (user_id,attendance_id,requested_login_time,requested_logout_time,reason,status,created_at) VALUES (?,?,?,?,?,'PENDING',?)", (u["id"], attendance_id, r_login, r_logout, reason, now_iso()))
-        conn.commit()
-    return jsonify({"message": "Edit request submitted", "id": int(cur.lastrowid)})
-
-
-@app.get("/api/admin/edit-requests")
-@api_guard("ADMIN")
-def edit_req_list():
-    status = request.args.get("status")
-    where, params = "", []
-    if status:
-        status = status.strip().upper()
-        if status not in {"PENDING", "APPROVED", "REJECTED"}:
-            return jsonify({"message": "Invalid status"}), 400
-        where = "WHERE r.status=?"; params.append(status)
-    with conn_db() as conn:
-        rows = conn.execute(f"SELECT r.*,u.name employee_name,u.employee_code,a.attendance_date,a.login_time current_login_time,a.logout_time current_logout_time FROM attendance_edit_requests r JOIN users u ON u.id=r.user_id JOIN attendance a ON a.id=r.attendance_id {where} ORDER BY r.created_at DESC,r.id DESC", tuple(params)).fetchall()
-    return jsonify({"items": to_items(rows)})
-
-
 def recalc_attendance(conn, attendance_id):
     a = conn.execute("SELECT * FROM attendance WHERE id=?", (attendance_id,)).fetchone()
     if not a or not a["login_time"] or not a["logout_time"]:
@@ -826,68 +1100,7 @@ def recalc_attendance(conn, attendance_id):
     if not p:
         return
     m = calc_metrics(a["login_time"], a["logout_time"], p)
-    conn.execute("UPDATE attendance SET total_hours=?,overtime=?,late_mark=?,early_leaving=?,half_day=?,status=?,updated_at=? WHERE id=?", (m["total_hours"], m["overtime"], m["late_mark"], m["early_leaving"], m["half_day"], m["status"], now_iso(), attendance_id))
-
-
-@app.post("/api/admin/edit-requests/<int:req_id>/approve")
-@api_guard("ADMIN")
-def edit_req_approve(req_id):
-    admin = request.current_user
-    with conn_db() as conn:
-        r = conn.execute("SELECT * FROM attendance_edit_requests WHERE id=?", (req_id,)).fetchone()
-        if not r:
-            return jsonify({"message": "Request not found"}), 404
-        if r["status"] != "PENDING":
-            return jsonify({"message": "Request already processed"}), 400
-        a = conn.execute("SELECT * FROM attendance WHERE id=?", (r["attendance_id"],)).fetchone()
-        if not a:
-            return jsonify({"message": "Attendance not found"}), 404
-        old = dict(a)
-        login = r["requested_login_time"] or a["login_time"]
-        logout = r["requested_logout_time"] or a["logout_time"]
-        conn.execute("UPDATE attendance SET login_time=?,logout_time=?,updated_at=? WHERE id=?", (login, logout, now_iso(), a["id"]))
-        if login:
-            conn.execute("UPDATE attendance SET attendance_date=? WHERE id=?", (parse_dt(login).date().isoformat(), a["id"]))
-        recalc_attendance(conn, int(a["id"]))
-        new = dict(conn.execute("SELECT * FROM attendance WHERE id=?", (a["id"],)).fetchone())
-        conn.execute("UPDATE attendance_edit_requests SET status='APPROVED',reviewed_by=?,reviewed_at=? WHERE id=?", (admin["id"], now_iso(), req_id))
-        audit(conn, int(a["id"]), "EDIT_REQUEST_APPROVED", int(admin["id"]), old, new)
-        conn.commit()
-    return jsonify({"message": "Request approved"})
-
-
-@app.post("/api/admin/edit-requests/<int:req_id>/reject")
-@api_guard("ADMIN")
-def edit_req_reject(req_id):
-    admin = request.current_user
-    with conn_db() as conn:
-        r = conn.execute("SELECT * FROM attendance_edit_requests WHERE id=?", (req_id,)).fetchone()
-        if not r:
-            return jsonify({"message": "Request not found"}), 404
-        if r["status"] != "PENDING":
-            return jsonify({"message": "Request already processed"}), 400
-        conn.execute("UPDATE attendance_edit_requests SET status='REJECTED',reviewed_by=?,reviewed_at=? WHERE id=?", (admin["id"], now_iso(), req_id))
-        conn.commit()
-    return jsonify({"message": "Request rejected"})
-
-
-@app.get("/api/admin/audit")
-@api_guard("ADMIN")
-def audit_list():
-    aid = request.args.get("attendance_id")
-    f = request.args.get("from")
-    t = request.args.get("to")
-    cond, params = [], []
-    if aid:
-        cond.append("l.attendance_id=?"); params.append(int(aid))
-    if f:
-        date.fromisoformat(f); cond.append("substr(l.created_at,1,10)>=?"); params.append(f)
-    if t:
-        date.fromisoformat(t); cond.append("substr(l.created_at,1,10)<=?"); params.append(t)
-    where = "WHERE " + " AND ".join(cond) if cond else ""
-    with conn_db() as conn:
-        rows = conn.execute(f"SELECT l.*,u.name actor_name,u.employee_code actor_code FROM attendance_audit_log l LEFT JOIN users u ON u.id=l.actor_user_id {where} ORDER BY l.created_at DESC,l.id DESC LIMIT 500", tuple(params)).fetchall()
-    return jsonify({"items": to_items(rows)})
+    conn.execute("UPDATE attendance SET total_hours=?,overtime=?,late_mark=?,status=?,updated_at=? WHERE id=?", (m["total_hours"], m["overtime"], m["late_mark"], m["status"], now_iso(), attendance_id))
 
 
 @app.get("/api/admin/export.xlsx")
@@ -908,7 +1121,7 @@ def export_xlsx():
         rows = conn.execute(
             f"""
             SELECT u.name employee,a.attendance_date,a.login_time,a.logout_time,a.total_hours,a.overtime,
-                   a.late_mark,a.early_leaving,a.half_day,a.status,
+                   a.late_mark,a.break_taken,a.status,
                    COALESCE(s.name,'General Shift') shift_name,COALESCE(c.name,'General') category_name
             FROM attendance a JOIN users u ON u.id=a.user_id
             LEFT JOIN shifts s ON s.id=u.shift_id LEFT JOIN employee_categories c ON c.id=u.category_id
@@ -920,11 +1133,47 @@ def export_xlsx():
     wb = Workbook()
     ws = wb.active
     ws.title = "Attendance"
-    ws.append(["Employee", "Date", "Login", "Logout", "Hours", "OT", "Late", "Early", "Half-Day", "Status", "Shift", "Category"])
+    ws.append(["Employee", "Date", "Login", "Logout", "Hours", "OT", "Late", "Break Taken", "Status", "Shift", "Category"])
     for r in rows:
-        ws.append([r["employee"], r["attendance_date"], r["login_time"], r["logout_time"], r["total_hours"], r["overtime"], r["late_mark"], r["early_leaving"], r["half_day"], r["status"], r["shift_name"], r["category_name"]])
+        ws.append([r["employee"], r["attendance_date"], r["login_time"], r["logout_time"], r["total_hours"], r["overtime"], r["late_mark"], r["break_taken"], r["status"], r["shift_name"], r["category_name"]])
     out = io.BytesIO(); wb.save(out); out.seek(0)
     return send_file(out, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name=f"attendance_{dfrom.isoformat()}_{dto.isoformat()}.xlsx")
+
+
+@app.get("/api/employee/export.xlsx")
+@api_guard("EMPLOYEE")
+def export_my_attendance_xlsx():
+    try:
+        from openpyxl import Workbook
+    except ImportError:
+        return jsonify({"message": "openpyxl is required for export"}), 500
+
+    u = request.current_user
+    try:
+        dfrom, dto = resolve_date_range(request.args.get("from"), request.args.get("to"))
+    except Exception as e:
+        return jsonify({"message": str(e)}), 400
+
+    with conn_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT attendance_date,login_time,logout_time,total_hours,overtime,late_mark,break_taken,status
+            FROM attendance WHERE user_id=? AND attendance_date BETWEEN ? AND ?
+            ORDER BY attendance_date DESC,id DESC
+            """,
+            (u["id"], dfrom.isoformat(), dto.isoformat()),
+        ).fetchall()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "My Attendance"
+    ws.append(["Date", "Login", "Logout", "Hours", "OT", "Late", "Break Taken", "Status"])
+    for r in rows:
+        ws.append([r["attendance_date"], r["login_time"], r["logout_time"], r["total_hours"], r["overtime"], r["late_mark"], r["break_taken"], r["status"]])
+    out = io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return send_file(out, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name=f"my_attendance_{dfrom.isoformat()}_{dto.isoformat()}.xlsx")
 
 
 init_db()
