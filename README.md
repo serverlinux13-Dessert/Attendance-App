@@ -101,6 +101,24 @@ pip install -r requirements.txt
 sudo systemctl restart attendance
 ```
 
+## Production (Windows Server Quick Run)
+
+For a quick production run on Windows, the app now auto-switches to `waitress` when `APP_ENV=production`.
+
+```powershell
+$env:APP_ENV = "production"
+$env:SECRET_KEY = "<long-random-secret>"
+$env:TRUST_PROXY = "1"  # set this only when behind reverse proxy
+.\.venv\Scripts\python.exe app.py
+```
+
+Or one command:
+
+```powershell
+$env:SECRET_KEY = "<long-random-secret>"
+.\run-prod.ps1
+```
+
 ## URLs
 
 - Login: `http://localhost:8000/login`

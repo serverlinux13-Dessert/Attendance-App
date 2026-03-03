@@ -1343,5 +1343,13 @@ init_db()
 if __name__ == "__main__":
     host = os.getenv("FLASK_RUN_HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8000"))
-    debug = os.getenv("FLASK_DEBUG", "0") == "1" and not IS_PRODUCTION
-    app.run(host=host, port=port, debug=debug)
+    if IS_PRODUCTION:
+        try:
+            from waitress import serve
+        except ImportError as exc:
+            raise RuntimeError("waitress is required when APP_ENV=production. Install with: pip install -r requirements.txt") from exc
+        threads = int(os.getenv("WAITRESS_THREADS", "8"))
+        serve(app, host=host, port=port, threads=threads)
+    else:
+        debug = os.getenv("FLASK_DEBUG", "0") == "1"
+        app.run(host=host, port=port, debug=debug)
