@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import hmac
+import ipaddress
 import io
 import json
 import os
@@ -43,7 +44,36 @@ if not SECRET_KEY:
     SECRET_KEY = "dev-change-this-secret"
 REQUIRE_OFFICE_NETWORK = os.getenv("REQUIRE_OFFICE_NETWORK", "0") == "1"
 ALLOWED_SUBNET = os.getenv("ALLOWED_SUBNET", "").strip()
+ALLOWED_SUBNETS = os.getenv("ALLOWED_SUBNETS", "").strip()
+ALLOW_ADMIN_FROM_ANYWHERE = os.getenv("ALLOW_ADMIN_FROM_ANYWHERE", "1") == "1"
 TRUST_PROXY = os.getenv("TRUST_PROXY", "0") == "1"
+HAS_EXPLICIT_ALLOWED_NETWORKS = bool(ALLOWED_SUBNET or ALLOWED_SUBNETS)
+
+
+def load_allowed_networks():
+    configured = []
+    if ALLOWED_SUBNET:
+        configured.append(ALLOWED_SUBNET)
+    if ALLOWED_SUBNETS:
+        configured.extend(p.strip() for p in ALLOWED_SUBNETS.split(","))
+
+    networks = []
+    seen = set()
+    for value in configured:
+        if not value:
+            continue
+        try:
+            net = ipaddress.ip_network(value, strict=False)
+        except ValueError:
+            continue
+        key = net.with_prefixlen
+        if key not in seen:
+            seen.add(key)
+            networks.append(net)
+    return networks
+
+
+ALLOWED_NETWORKS = load_allowed_networks()
 
 app = Flask(__name__)
 app.config.update(
@@ -123,13 +153,14 @@ def office_ok():
     ip = get_client_ip()
     if ip.startswith("127.") or ip == "::1":
         return True
-    if ALLOWED_SUBNET:
-        import ipaddress
-
+    if HAS_EXPLICIT_ALLOWED_NETWORKS:
         try:
-            return ipaddress.ip_address(ip) in ipaddress.ip_network(ALLOWED_SUBNET, strict=False)
-        except Exception:
+            client_ip = ipaddress.ip_address(ip)
+        except ValueError:
             return False
+        if not ALLOWED_NETWORKS:
+            return False
+        return any(client_ip in net for net in ALLOWED_NETWORKS)
     return ip.startswith("10.") or ip.startswith("192.168.") or ip.startswith("172.")
 
 
@@ -137,6 +168,10 @@ def office_check():
     if office_ok():
         return None
     return jsonify({"message": "Access allowed only from office network"}), 403
+
+
+def role_bypasses_office_check(role):
+    return ALLOW_ADMIN_FROM_ANYWHERE and role == "ADMIN"
 
 
 def valid_pin(pin):
@@ -398,14 +433,15 @@ def html_guard(role=None):
     def d(fn):
         @wraps(fn)
         def w(*a, **k):
-            chk = office_check()
-            if chk:
-                return chk
             u = auth_user()
             if not u:
                 return redirect(url_for("login_page"))
             if role and u["role"] != role:
                 return redirect(url_for("dashboard"))
+            if not role_bypasses_office_check(u["role"]):
+                chk = office_check()
+                if chk:
+                    return chk
             return fn(*a, **k)
 
         return w
@@ -417,14 +453,15 @@ def api_guard(role=None):
     def d(fn):
         @wraps(fn)
         def w(*a, **k):
-            chk = office_check()
-            if chk:
-                return chk
             u = auth_user()
             if not u:
                 return jsonify({"message": "Authentication required"}), 401
             if role and u["role"] != role:
                 return jsonify({"message": "Forbidden"}), 403
+            if not role_bypasses_office_check(u["role"]):
+                chk = office_check()
+                if chk:
+                    return chk
             request.current_user = u
             return fn(*a, **k)
 
@@ -469,9 +506,8 @@ def scanner_js():
 
 @app.get("/login")
 def login_page():
-    chk = office_check()
-    if chk:
-        return chk
+    if not office_ok() and not ALLOW_ADMIN_FROM_ANYWHERE:
+        return jsonify({"message": "Access allowed only from office network"}), 403
     if auth_user():
         return redirect(url_for("dashboard"))
     return render_template("login.html")
@@ -498,9 +534,6 @@ def employee_dashboard():
 
 @app.post("/auth/login")
 def auth_login():
-    chk = office_check()
-    if chk:
-        return chk
     data = request.get_json(silent=True) or request.form.to_dict() or {}
     pin = str(data.get("pin", "")).strip()
     if not valid_pin(pin):
@@ -522,6 +555,9 @@ def auth_login():
 
         if not user or not user["pin_hash"] or not check_password_hash(user["pin_hash"], pin):
             return jsonify({"message": "Invalid credentials"}), 401
+
+    if not office_ok() and not role_bypasses_office_check(user["role"]):
+        return jsonify({"message": "Access allowed only from office network"}), 403
 
     session["user_id"] = int(user["id"])
     session["role"] = user["role"]

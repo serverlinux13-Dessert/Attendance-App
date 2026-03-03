@@ -49,6 +49,12 @@ Set at least:
 - `SECRET_KEY=<long random value>`
 - `TRUST_PROXY=1` (when running behind nginx)
 
+Optional office-network allowlist:
+- `REQUIRE_OFFICE_NETWORK=1`
+- `ALLOW_ADMIN_FROM_ANYWHERE=1` to let admin dashboard/admin APIs work from any IP
+- `ALLOWED_SUBNETS=192.168.1.0/24,203.0.113.10/32,198.51.100.20/32`
+- `ALLOWED_SUBNET` is still supported for a single subnet/IP.
+
 Then lock down the file:
 
 ```bash
