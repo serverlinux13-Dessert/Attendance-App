@@ -48,6 +48,7 @@ Set at least:
 - `APP_ENV=production`
 - `SECRET_KEY=<long random value>`
 - `TRUST_PROXY=1` (when running behind nginx)
+- `SESSION_COOKIE_SECURE=1` for HTTPS, or `0` for HTTP-only LAN usage
 
 Optional office-network allowlist:
 - `REQUIRE_OFFICE_NETWORK=1`

@@ -50,6 +50,13 @@ TRUST_PROXY = os.getenv("TRUST_PROXY", "0") == "1"
 HAS_EXPLICIT_ALLOWED_NETWORKS = bool(ALLOWED_SUBNET or ALLOWED_SUBNETS)
 
 
+def env_flag(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def load_allowed_networks():
     configured = []
     if ALLOWED_SUBNET:
@@ -74,13 +81,14 @@ def load_allowed_networks():
 
 
 ALLOWED_NETWORKS = load_allowed_networks()
+SESSION_COOKIE_SECURE = env_flag("SESSION_COOKIE_SECURE", IS_PRODUCTION)
 
 app = Flask(__name__)
 app.config.update(
     SECRET_KEY=SECRET_KEY,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=IS_PRODUCTION,
+    SESSION_COOKIE_SECURE=SESSION_COOKIE_SECURE,
 )
 if TRUST_PROXY:
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
