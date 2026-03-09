@@ -86,6 +86,11 @@ body {
   margin: 0 0 10px;
 }
 
+.card.profile-card {
+  min-height: unset;
+  resize: none;
+}
+
 .span-12 {
   grid-column: span 12;
 }

@@ -107,6 +107,17 @@ def has_col(conn, table, col):
     return any(r["name"] == col for r in rows)
 
 
+def col_default(conn, table, col):
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    for r in rows:
+        if r["name"] == col:
+            v = r["dflt_value"]
+            if v is None:
+                return None
+            return str(v).strip().strip("'\"")
+    return None
+
+
 def ensure_col(conn, table, col, ddl):
     if not has_col(conn, table, col):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
@@ -242,9 +253,12 @@ def calc_metrics(login_iso, logout_iso, profile):
     }
 
 
-def execute_attendance_session_action(conn, user_id, purpose, action_iso):
+def execute_attendance_session_action(conn, user_id, purpose, action_iso, login_method=None):
     if purpose == "login":
         day = now_ist().date().isoformat()
+        method = str(login_method or "UNKNOWN").strip().upper()
+        if method not in {"QR", "OTP"}:
+            method = "UNKNOWN"
         open_row = conn.execute("SELECT id FROM attendance WHERE user_id=? AND login_time IS NOT NULL AND logout_time IS NULL ORDER BY id DESC LIMIT 1", (user_id,)).fetchone()
         if open_row:
             return {"message": "User already logged in"}, 400
@@ -254,9 +268,9 @@ def execute_attendance_session_action(conn, user_id, purpose, action_iso):
             return {"message": "Attendance already captured for today"}, 400
 
         if today and not today["login_time"]:
-            conn.execute("UPDATE attendance SET login_time=?,status='PRESENT',system_logout=0,updated_at=? WHERE id=?", (action_iso, action_iso, today["id"]))
+            conn.execute("UPDATE attendance SET login_time=?,login_method=?,status='PRESENT',system_logout=0,updated_at=? WHERE id=?", (action_iso, method, action_iso, today["id"]))
         else:
-            conn.execute("INSERT INTO attendance (user_id,attendance_date,login_time,status,created_at,updated_at) VALUES (?,?,?,'PRESENT',?,?)", (user_id, day, action_iso, action_iso, action_iso))
+            conn.execute("INSERT INTO attendance (user_id,attendance_date,login_time,login_method,break_taken,status,created_at,updated_at) VALUES (?,?,?,?,1,'PRESENT',?,?)", (user_id, day, action_iso, method, action_iso, action_iso))
         return {"message": "Login Recorded"}, 200
 
     if purpose == "logout":
@@ -325,11 +339,12 @@ def rebuild_schema_if_needed(conn):
                 user_id INTEGER NOT NULL,
                 attendance_date TEXT NOT NULL,
                 login_time TEXT,
+                login_method TEXT,
                 logout_time TEXT,
                 total_hours REAL,
                 overtime REAL,
                 late_mark INTEGER NOT NULL DEFAULT 0,
-                break_taken INTEGER NOT NULL DEFAULT 0,
+                break_taken INTEGER NOT NULL DEFAULT 1,
                 status TEXT NOT NULL DEFAULT 'PRESENT',
                 system_logout INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -341,7 +356,7 @@ def rebuild_schema_if_needed(conn):
         conn.execute(
             """
             INSERT INTO attendance (
-                id,user_id,attendance_date,login_time,logout_time,total_hours,overtime,late_mark,break_taken,status,system_logout,created_at,updated_at
+                id,user_id,attendance_date,login_time,login_method,logout_time,total_hours,overtime,late_mark,break_taken,status,system_logout,created_at,updated_at
             )
             WITH normalized AS (
                 SELECT *,
@@ -354,9 +369,9 @@ def rebuild_schema_if_needed(conn):
                 FROM normalized
             )
             SELECT
-                id,user_id,normalized_date,login_time,logout_time,total_hours,overtime,
+                id,user_id,normalized_date,login_time,NULL,logout_time,total_hours,overtime,
                 COALESCE(late_mark,0),
-                COALESCE(break_taken,0),
+                COALESCE(break_taken,1),
                 CASE WHEN status='ABSENT' THEN 'ABSENT' ELSE 'PRESENT' END,
                 COALESCE(system_logout,0),
                 COALESCE(created_at,login_time,?),
@@ -370,6 +385,65 @@ def rebuild_schema_if_needed(conn):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id,attendance_date)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_status_date ON attendance(status,attendance_date)")
 
+    # Older databases may have break_taken defaulted to 0. Rebuild once so new
+    # attendance rows default to break_taken=1.
+    if table_exists(conn, "attendance") and has_col(conn, "attendance", "break_taken"):
+        break_default = col_default(conn, "attendance", "break_taken")
+        if break_default != "1":
+            conn.execute("ALTER TABLE attendance RENAME TO attendance_old_break_default")
+            conn.execute(
+                """
+                CREATE TABLE attendance(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    attendance_date TEXT NOT NULL,
+                    login_time TEXT,
+                    login_method TEXT,
+                    logout_time TEXT,
+                    total_hours REAL,
+                    overtime REAL,
+                    late_mark INTEGER NOT NULL DEFAULT 0,
+                    break_taken INTEGER NOT NULL DEFAULT 1,
+                    status TEXT NOT NULL DEFAULT 'PRESENT',
+                    system_logout INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT,
+                    UNIQUE(user_id,attendance_date)
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO attendance (
+                    id,user_id,attendance_date,login_time,login_method,logout_time,total_hours,overtime,late_mark,break_taken,status,system_logout,created_at,updated_at
+                )
+                WITH normalized AS (
+                    SELECT *,
+                           COALESCE(attendance_date,substr(login_time,1,10),substr(created_at,1,10),?) normalized_date
+                    FROM attendance_old_break_default
+                ),
+                ranked AS (
+                    SELECT *,
+                           ROW_NUMBER() OVER (PARTITION BY user_id,normalized_date ORDER BY id DESC) rn
+                    FROM normalized
+                )
+                SELECT
+                    id,user_id,normalized_date,login_time,NULL,logout_time,total_hours,overtime,
+                    COALESCE(late_mark,0),
+                    COALESCE(break_taken,1),
+                    CASE WHEN status='ABSENT' THEN 'ABSENT' ELSE 'PRESENT' END,
+                    COALESCE(system_logout,0),
+                    COALESCE(created_at,login_time,?),
+                    COALESCE(updated_at,logout_time,login_time,?)
+                FROM ranked
+                WHERE rn=1
+                """,
+                (now_ist().date().isoformat(), now_iso(), now_iso()),
+            )
+            conn.execute("DROP TABLE attendance_old_break_default")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id,attendance_date)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_status_date ON attendance(status,attendance_date)")
+
     conn.execute("DROP INDEX IF EXISTS idx_edit_req_status_created")
 
 
@@ -380,7 +454,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS employee_categories(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,required_hours REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS shifts(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,start_time TEXT NOT NULL,end_time TEXT NOT NULL,grace_minutes INTEGER NOT NULL DEFAULT 15);
             CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,name TEXT,role TEXT NOT NULL DEFAULT 'EMPLOYEE',employee_code TEXT,pin_hash TEXT,category_id INTEGER,shift_id INTEGER,category_hours INTEGER,active INTEGER NOT NULL DEFAULT 1,created_at TEXT);
-            CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,attendance_date TEXT NOT NULL,login_time TEXT,logout_time TEXT,total_hours REAL,overtime REAL,late_mark INTEGER NOT NULL DEFAULT 0,break_taken INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'PRESENT',system_logout INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT,UNIQUE(user_id,attendance_date));
+            CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,attendance_date TEXT NOT NULL,login_time TEXT,login_method TEXT,logout_time TEXT,total_hours REAL,overtime REAL,late_mark INTEGER NOT NULL DEFAULT 0,break_taken INTEGER NOT NULL DEFAULT 1,status TEXT NOT NULL DEFAULT 'PRESENT',system_logout INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT,UNIQUE(user_id,attendance_date));
             CREATE TABLE IF NOT EXISTS qr_sessions(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,purpose TEXT NOT NULL,expires_at INTEGER NOT NULL,used INTEGER NOT NULL DEFAULT 0,otp_hash TEXT,otp_failed_attempts INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id,attendance_date);
             CREATE INDEX IF NOT EXISTS idx_attendance_status_date ON attendance(status,attendance_date);
@@ -397,8 +471,9 @@ def init_db():
         ensure_col(conn, "users", "active", "INTEGER NOT NULL DEFAULT 1")
         ensure_col(conn, "users", "created_at", "TEXT")
         ensure_col(conn, "attendance", "attendance_date", "TEXT")
+        ensure_col(conn, "attendance", "login_method", "TEXT")
         ensure_col(conn, "attendance", "late_mark", "INTEGER NOT NULL DEFAULT 0")
-        ensure_col(conn, "attendance", "break_taken", "INTEGER NOT NULL DEFAULT 0")
+        ensure_col(conn, "attendance", "break_taken", "INTEGER NOT NULL DEFAULT 1")
         ensure_col(conn, "attendance", "status", "TEXT NOT NULL DEFAULT 'PRESENT'")
         ensure_col(conn, "attendance", "system_logout", "INTEGER NOT NULL DEFAULT 0")
         ensure_col(conn, "attendance", "created_at", "TEXT")
@@ -584,7 +659,24 @@ def auth_logout():
 @api_guard()
 def auth_me():
     u = request.current_user
-    return jsonify({"user": {"id": int(u["id"]), "name": u["name"], "role": u["role"], "employee_code": u["employee_code"]}})
+    with conn_db() as conn:
+        p = user_profile(conn, int(u["id"]))
+    category_name = p["category_name"] if p else "General"
+    shift_start = p["shift_start"] if p else "09:00"
+    shift_end = p["shift_end"] if p else "18:00"
+    return jsonify(
+        {
+            "user": {
+                "id": int(u["id"]),
+                "name": u["name"],
+                "role": u["role"],
+                "employee_code": u["employee_code"],
+                "category_name": category_name,
+                "shift_start": shift_start,
+                "shift_end": shift_end,
+            }
+        }
+    )
 
 @app.post("/generate-qr")
 @api_guard("EMPLOYEE")
@@ -657,7 +749,7 @@ def scan_qr():
             if not qr or int(qr["used"]) == 1 or int(qr["expires_at"]) < nowms:
                 return jsonify({"message": "Invalid or expired credential"}), 400
             conn.execute("UPDATE qr_sessions SET used=1 WHERE id=?", (token,))
-            payload, status = execute_attendance_session_action(conn, int(qr["user_id"]), str(qr["purpose"]).lower(), niso)
+            payload, status = execute_attendance_session_action(conn, int(qr["user_id"]), str(qr["purpose"]).lower(), niso, "QR")
             return jsonify(payload), status
 
         user = conn.execute("SELECT id FROM users WHERE UPPER(employee_code)=UPPER(?) AND active=1", (employee_code,)).fetchone()
@@ -692,7 +784,7 @@ def scan_qr():
             return jsonify({"message": f"Invalid OTP. {remaining} attempt(s) remaining."}), 400
 
         conn.execute("UPDATE qr_sessions SET used=1 WHERE id=?", (qr["id"],))
-        payload, status = execute_attendance_session_action(conn, uid, str(qr["purpose"]).lower(), niso)
+        payload, status = execute_attendance_session_action(conn, uid, str(qr["purpose"]).lower(), niso, "OTP")
         return jsonify(payload), status
 
 
@@ -716,7 +808,7 @@ def midnight_close():
             uid = int(u["id"])
             row = conn.execute("SELECT * FROM attendance WHERE user_id=? AND attendance_date=?", (uid, target.isoformat())).fetchone()
             if not row:
-                conn.execute("INSERT INTO attendance (user_id,attendance_date,status,created_at,updated_at) VALUES (?,?,'ABSENT',?,?)", (uid, target.isoformat(), now_iso(), now_iso()))
+                conn.execute("INSERT INTO attendance (user_id,attendance_date,break_taken,status,created_at,updated_at) VALUES (?, ?, 0, 'ABSENT', ?, ?)", (uid, target.isoformat(), now_iso(), now_iso()))
                 absent += 1
                 continue
             if row["login_time"] and not row["logout_time"]:
@@ -782,7 +874,11 @@ def admin_attendance():
         total = conn.execute(f"SELECT COUNT(*) cnt FROM attendance a JOIN users u ON u.id=a.user_id WHERE {where}", tuple(params)).fetchone()["cnt"]
         rows = conn.execute(
             f"""
-            SELECT a.*,u.name employee_name,u.employee_code,COALESCE(s.name,'General Shift') shift_name,COALESCE(c.name,'General') category_name
+            SELECT a.*,u.name employee_name,u.employee_code,COALESCE(s.name,'General Shift') shift_name,COALESCE(c.name,'General') category_name,
+                   CASE
+                     WHEN a.login_time IS NULL OR a.logout_time IS NULL THEN NULL
+                     ELSE ROUND(MAX(0, COALESCE(c.required_hours,9) - COALESCE(a.total_hours,0)), 4)
+                   END early_logout_hours
             FROM attendance a JOIN users u ON u.id=a.user_id
             LEFT JOIN shifts s ON s.id=u.shift_id LEFT JOIN employee_categories c ON c.id=u.category_id
             WHERE {where} ORDER BY a.attendance_date DESC,a.id DESC LIMIT ? OFFSET ?
@@ -851,9 +947,16 @@ def admin_employee_summary():
         ).fetchone()
         rows = conn.execute(
             """
-            SELECT id,attendance_date,login_time,logout_time,total_hours,overtime,late_mark,break_taken,status
-            FROM attendance WHERE user_id=? AND attendance_date BETWEEN ? AND ?
-            ORDER BY attendance_date DESC,id DESC
+            SELECT a.id,a.attendance_date,a.login_time,a.login_method,a.logout_time,a.total_hours,a.overtime,a.late_mark,a.break_taken,a.status,
+                   CASE
+                     WHEN a.login_time IS NULL OR a.logout_time IS NULL THEN NULL
+                     ELSE ROUND(MAX(0, COALESCE(c.required_hours,9) - COALESCE(a.total_hours,0)), 4)
+                   END early_logout_hours
+            FROM attendance a
+            JOIN users u ON u.id=a.user_id
+            LEFT JOIN employee_categories c ON c.id=u.category_id
+            WHERE a.user_id=? AND a.attendance_date BETWEEN ? AND ?
+            ORDER BY a.attendance_date DESC,a.id DESC
             """,
             (employee["id"], dfrom.isoformat(), dto.isoformat()),
         ).fetchall()
@@ -947,9 +1050,16 @@ def admin_attendance_edit():
     has_login = "login_time" in d
     has_logout = "logout_time" in d
     has_break = "break_taken" in d
+    has_category = "category_id" in d
     has_shift = "shift_id" in d
-    if not any([has_login, has_logout, has_break, has_shift]):
+    if not any([has_login, has_logout, has_break, has_category, has_shift]):
         return jsonify({"message": "No fields to update"}), 400
+    category_id = None
+    if has_category:
+        try:
+            category_id = int(d.get("category_id"))
+        except Exception:
+            return jsonify({"message": "category_id must be an integer"}), 400
     shift_id = None
     if has_shift:
         try:
@@ -958,9 +1068,13 @@ def admin_attendance_edit():
             return jsonify({"message": "shift_id must be an integer"}), 400
 
     with conn_db() as conn:
-        user = conn.execute("SELECT id,employee_code,shift_id FROM users WHERE employee_code=?", (code,)).fetchone()
+        user = conn.execute("SELECT id,employee_code,category_id,shift_id FROM users WHERE employee_code=?", (code,)).fetchone()
         if not user:
             return jsonify({"message": "Employee not found"}), 404
+        if has_category:
+            cat = conn.execute("SELECT id FROM employee_categories WHERE id=?", (category_id,)).fetchone()
+            if not cat:
+                return jsonify({"message": "Category not found"}), 404
         if has_shift:
             sh = conn.execute("SELECT id FROM shifts WHERE id=?", (shift_id,)).fetchone()
             if not sh:
@@ -1000,8 +1114,16 @@ def admin_attendance_edit():
         params.append(row["id"])
         conn.execute(f"UPDATE attendance SET {', '.join(fields)} WHERE id=?", tuple(params))
 
+        user_fields, user_params = [], []
+        if has_category:
+            user_fields.append("category_id=?")
+            user_params.append(category_id)
         if has_shift:
-            conn.execute("UPDATE users SET shift_id=? WHERE id=?", (shift_id, user["id"]))
+            user_fields.append("shift_id=?")
+            user_params.append(shift_id)
+        if user_fields:
+            user_params.append(user["id"])
+            conn.execute(f"UPDATE users SET {', '.join(user_fields)} WHERE id=?", tuple(user_params))
 
         latest = conn.execute("SELECT * FROM attendance WHERE id=?", (row["id"],)).fetchone()
         if latest["login_time"] and latest["logout_time"]:
@@ -1029,7 +1151,22 @@ def my_attendance():
     offset = (page - 1) * page_size
     with conn_db() as conn:
         total = conn.execute("SELECT COUNT(*) cnt FROM attendance WHERE user_id=? AND attendance_date BETWEEN ? AND ?", (u["id"], dfrom.isoformat(), dto.isoformat())).fetchone()["cnt"]
-        rows = conn.execute("SELECT * FROM attendance WHERE user_id=? AND attendance_date BETWEEN ? AND ? ORDER BY attendance_date DESC,id DESC LIMIT ? OFFSET ?", (u["id"], dfrom.isoformat(), dto.isoformat(), page_size, offset)).fetchall()
+        rows = conn.execute(
+            """
+            SELECT a.*,
+                   CASE
+                     WHEN a.login_time IS NULL OR a.logout_time IS NULL THEN NULL
+                     ELSE ROUND(MAX(0, COALESCE(c.required_hours,9) - COALESCE(a.total_hours,0)), 4)
+                   END early_logout_hours
+            FROM attendance a
+            JOIN users u ON u.id=a.user_id
+            LEFT JOIN employee_categories c ON c.id=u.category_id
+            WHERE a.user_id=? AND a.attendance_date BETWEEN ? AND ?
+            ORDER BY a.attendance_date DESC,a.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (u["id"], dfrom.isoformat(), dto.isoformat(), page_size, offset),
+        ).fetchall()
     return jsonify({"items": to_items(rows), "page": page, "page_size": page_size, "total": total})
 
 

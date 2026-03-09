@@ -79,6 +79,16 @@ function formatDashboardDateTime(v) {
   return `${dd}-${mm}-${yyyy} / ${hh}:${min}:${sec}`;
 }
 
+function formatHoursToHHMM(v) {
+  if (v == null || v === "") return "";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "";
+  const totalMinutes = Math.max(0, Math.round(n * 60));
+  const hh = String(Math.floor(totalMinutes / 60)).padStart(2, "0");
+  const mm = String(totalMinutes % 60).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
 function options(items, valueKey, labelKey, selected) {
   return (items || [])
     .map((x) => `<option value="${x[valueKey]}" ${String(x[valueKey]) === String(selected) ? "selected" : ""}>${x[labelKey]}</option>`)
@@ -227,7 +237,7 @@ async function loadMergedEmployeeView() {
     tb.innerHTML = "";
     (d.attendance || []).forEach((i) => {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${i.attendance_date || ""}</td><td>${formatDashboardDateTime(i.login_time)}</td><td>${formatDashboardDateTime(i.logout_time)}</td><td>${kpiValue(i.total_hours)}</td><td>${kpiValue(i.overtime)}</td><td>${kpiValue(i.late_mark)}</td><td>${Number(i.break_taken || 0) === 1 ? "Yes" : "No"}</td>`;
+      tr.innerHTML = `<td>${i.attendance_date || ""}</td><td>${formatDashboardDateTime(i.login_time)}</td><td>${formatDashboardDateTime(i.logout_time)}</td><td>${i.login_method || "-"}</td><td>${kpiValue(i.total_hours)}</td><td>${kpiValue(i.overtime)}</td><td>${formatHoursToHHMM(i.early_logout_hours)}</td><td>${kpiValue(i.late_mark)}</td><td>${Number(i.break_taken || 0) === 1 ? "Yes" : "No"}</td>`;
       tb.appendChild(tr);
     });
     setMergedExportLink();
@@ -246,7 +256,7 @@ async function loadTodayAttendance() {
   tb.innerHTML = "";
   (d.items || []).forEach((i) => {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${i.employee_code || ""}</td><td>${i.attendance_date || ""}</td><td>${formatDashboardDateTime(i.login_time)}</td><td>${formatDashboardDateTime(i.logout_time)}</td><td>${kpiValue(i.total_hours)}</td><td>${kpiValue(i.overtime)}</td><td>${kpiValue(i.late_mark)}</td><td>${Number(i.break_taken || 0) === 1 ? "Yes" : "No"}</td>`;
+    tr.innerHTML = `<td>${i.employee_code || ""}</td><td>${i.attendance_date || ""}</td><td>${formatDashboardDateTime(i.login_time)}</td><td>${formatDashboardDateTime(i.logout_time)}</td><td>${i.login_method || "-"}</td><td>${kpiValue(i.total_hours)}</td><td>${kpiValue(i.overtime)}</td><td>${formatHoursToHHMM(i.early_logout_hours)}</td><td>${kpiValue(i.late_mark)}</td><td>${Number(i.break_taken || 0) === 1 ? "Yes" : "No"}</td>`;
     tb.appendChild(tr);
   });
 }
@@ -393,6 +403,7 @@ async function fetchCategories() {
   });
 
   fillSelect(qs("uCategory"), adminState.categories, "id", "name");
+  fillSelect(qs("editCategoryId"), adminState.categories, "id", "name", "Category (No Change)");
 }
 
 async function createCategory(e) {
@@ -514,6 +525,7 @@ async function loadCurrentAttendanceEdit() {
   qs("editLogoutTime").value = isoToLocalInput(row.logout_time);
   qs("editBreakTaken").value = row.break_taken === 1 ? "1" : "0";
   const user = findUserByCode(code);
+  qs("editCategoryId").value = String((user && user.category_id) || "");
   qs("editShiftId").value = String((user && user.shift_id) || "");
 }
 
@@ -529,6 +541,7 @@ async function submitAdminAttendanceEdit(e) {
   if (qs("editLoginTime").value) payload.login_time = qs("editLoginTime").value;
   if (qs("editLogoutTime").value) payload.logout_time = qs("editLogoutTime").value;
   if (qs("editBreakTaken").value !== "") payload.break_taken = Number(qs("editBreakTaken").value);
+  if (qs("editCategoryId").value) payload.category_id = Number(qs("editCategoryId").value);
   if (qs("editShiftId").value) payload.shift_id = Number(qs("editShiftId").value);
 
   await api("/api/admin/attendance/edit", { method: "POST", body: JSON.stringify(payload) });
@@ -539,7 +552,35 @@ async function submitAdminAttendanceEdit(e) {
   alert("Attendance updated");
 }
 
-async function loadEmployee() {
+function renderEmployeeProfile(user) {
+  const nameEl = qs("empInfoName");
+  if (!nameEl) return;
+
+  const codeEl = qs("empInfoCode");
+  const categoryEl = qs("empInfoCategory");
+  const shiftEl = qs("empInfoShiftTimings");
+
+  const name = String((user && user.name) || "").trim();
+  const code = String((user && user.employee_code) || "").trim();
+  const category = String((user && user.category_name) || "").trim();
+  const shiftStart = String((user && user.shift_start) || "").trim();
+  const shiftEnd = String((user && user.shift_end) || "").trim();
+  const shiftTimings = shiftStart && shiftEnd ? `${shiftStart} - ${shiftEnd}` : (shiftStart || shiftEnd || "-");
+
+  nameEl.textContent = name || "-";
+  if (codeEl) codeEl.textContent = code || "-";
+  if (categoryEl) categoryEl.textContent = category || "-";
+  if (shiftEl) shiftEl.textContent = shiftTimings;
+}
+
+async function loadEmployee(currentUser) {
+  let user = currentUser;
+  if (!user || !user.category_name || !user.shift_start || !user.shift_end) {
+    const me = await api("/auth/me");
+    user = me.user || user;
+  }
+  renderEmployeeProfile(user);
+
   const r = monthRange();
   qs("fromDate").value = r.from;
   qs("toDate").value = r.to;
@@ -588,7 +629,18 @@ async function reloadEmployeeDashboard() {
 
 async function fetchEmployeeSummary() {
   const d = await api(`/api/employee/my-summary?from=${qs("fromDate").value}&to=${qs("toDate").value}`);
-  renderKV(qs("empSummary"), d);
+  renderOrderedKpis(
+    qs("empSummary"),
+    {
+      total_days: d.total_days,
+      present_count: d.present_count,
+      absent_count: d.absent_count,
+      late_count: d.late_count,
+      break_taken_days: d.break_taken_days,
+      overtime_hours: d.overtime_hours,
+    },
+    ["total_days", "present_count", "absent_count", "late_count", "break_taken_days", "overtime_hours"],
+  );
 }
 
 async function fetchEmployeeAttendance() {
@@ -597,7 +649,7 @@ async function fetchEmployeeAttendance() {
   tb.innerHTML = "";
   (d.items || []).forEach((i) => {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${i.attendance_date || ""}</td><td>${formatDashboardDateTime(i.login_time)}</td><td>${formatDashboardDateTime(i.logout_time)}</td><td>${kpiValue(i.total_hours)}</td><td>${kpiValue(i.overtime)}</td><td>${kpiValue(i.late_mark)}</td><td>${(i.break_taken || 0) === 1 ? "Yes" : "No"}</td><td>${i.status || ""}</td>`;
+    tr.innerHTML = `<td>${i.attendance_date || ""}</td><td>${formatDashboardDateTime(i.login_time)}</td><td>${formatDashboardDateTime(i.logout_time)}</td><td>${kpiValue(i.overtime)}</td><td>${formatHoursToHHMM(i.early_logout_hours)}</td><td>${kpiValue(i.late_mark)}</td><td>${(i.break_taken || 0) === 1 ? "Yes" : "No"}</td><td>${i.status || ""}</td>`;
     tb.appendChild(tr);
   });
 }
@@ -610,7 +662,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
     const me = await api("/auth/me");
     if (document.body.dataset.role === "admin" && me.user.role === "ADMIN") return loadAdmin();
-    if (document.body.dataset.role === "employee" && me.user.role === "EMPLOYEE") return loadEmployee();
+    if (document.body.dataset.role === "employee" && me.user.role === "EMPLOYEE") return loadEmployee(me.user);
   } catch (e) {
     if (location.pathname !== "/login") location.href = "/login";
     else alert(e.message);

@@ -27,7 +27,7 @@
       <div id="mergedSummary" class="kpi-grid"></div>
       <div class="table-wrap">
         <table id="mergedAttendanceTable">
-          <thead><tr><th>Date</th><th>Login</th><th>Logout</th><th>Hours</th><th>OT</th><th>Late</th><th>Break Taken</th></tr></thead>
+          <thead><tr><th>Date</th><th>Login</th><th>Logout</th><th>Login Method</th><th>Hours</th><th>OT(Hrs)</th><th>Early Logout Time(Hrs)</th><th>Late(Count)</th><th>Break Taken</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -40,7 +40,7 @@
       </div>
       <div class="table-wrap">
         <table id="todaysAttendanceTable">
-          <thead><tr><th>EMP_ID</th><th>Date</th><th>Login</th><th>Logout</th><th>Hours</th><th>OT</th><th>Late</th><th>Break Taken</th></tr></thead>
+          <thead><tr><th>EMP_ID</th><th>Date</th><th>Login</th><th>Logout</th><th>Login Method</th><th>Hours</th><th>OT(Hrs)</th><th>Early Logout Time(Hrs)</th><th>Late(Count)</th><th>Break Taken</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -64,11 +64,12 @@
             <option value="1">Break Taken = Yes</option>
             <option value="0">Break Taken = No</option>
           </select>
+          <select id="editCategoryId"></select>
           <select id="editShiftId"></select>
           <button type="submit">Save Changes</button>
         </div>
       </form>
-      <p class="muted">This updates attendance directly and recalculates metrics.</p>
+      <p class="muted">This updates attendance and selected employee category/shift, then recalculates metrics.</p>
     </section>
 
     <section class="card span-12">
