@@ -14,6 +14,143 @@ function qs(id) {
   return document.getElementById(id);
 }
 
+const DASHBOARD_LAYOUT_KEY = "dashboardLayout";
+let dashboardSaveTimer = null;
+let dashboardResizeObserver = null;
+let draggedDashboardCard = null;
+
+function getDashboardContainer() {
+  return document.querySelector(".dashboard-container");
+}
+
+function getDashboardCards(container = getDashboardContainer()) {
+  if (!container) return [];
+  return Array.from(container.querySelectorAll(".dashboard-card[data-widget-id]"));
+}
+
+function saveDashboardLayout() {
+  const cards = getDashboardCards();
+  const layout = [];
+  cards.forEach((card) => {
+    layout.push({
+      id: card.dataset.widgetId,
+      width: card.offsetWidth,
+      height: card.offsetHeight,
+    });
+  });
+  localStorage.setItem(DASHBOARD_LAYOUT_KEY, JSON.stringify(layout));
+}
+
+function loadDashboardLayout() {
+  let layout = null;
+  try {
+    layout = JSON.parse(localStorage.getItem(DASHBOARD_LAYOUT_KEY));
+  } catch (_) {
+    layout = null;
+  }
+  if (!Array.isArray(layout)) return;
+
+  const container = getDashboardContainer();
+  if (!container) return;
+
+  layout.forEach((item) => {
+    if (!item || !item.id) return;
+    const card = container.querySelector(`.dashboard-card[data-widget-id="${item.id}"]`);
+    if (!card) return;
+
+    const width = Number(item.width);
+    const height = Number(item.height);
+    if (!card.classList.contains("resize-height-only") && Number.isFinite(width) && width > 0) {
+      card.style.width = `${Math.round(width)}px`;
+    }
+    if (Number.isFinite(height) && height > 0) {
+      card.style.height = `${Math.round(height)}px`;
+    }
+
+    container.appendChild(card);
+  });
+}
+
+function scheduleDashboardLayoutSave() {
+  if (dashboardSaveTimer) clearTimeout(dashboardSaveTimer);
+  dashboardSaveTimer = setTimeout(() => {
+    saveDashboardLayout();
+  }, 200);
+}
+
+function setupDashboardResizeObserver() {
+  if (typeof ResizeObserver === "undefined") return;
+  const cards = getDashboardCards();
+  if (!cards.length) return;
+
+  dashboardResizeObserver = new ResizeObserver(() => {
+    scheduleDashboardLayoutSave();
+  });
+  cards.forEach((card) => dashboardResizeObserver.observe(card));
+}
+
+function setupDashboardDragAndDrop() {
+  const container = getDashboardContainer();
+  if (!container) return;
+
+  getDashboardCards(container).forEach((card) => {
+    card.setAttribute("draggable", "true");
+    card.addEventListener("dragstart", (event) => {
+      if (!event.target.closest(".card-header")) {
+        event.preventDefault();
+        return;
+      }
+      draggedDashboardCard = card;
+      card.classList.add("dragging");
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", card.dataset.widgetId || "");
+      }
+    });
+
+    card.addEventListener("dragend", () => {
+      card.classList.remove("dragging");
+      draggedDashboardCard = null;
+      saveDashboardLayout();
+    });
+  });
+
+  container.addEventListener("dragover", (event) => {
+    if (!draggedDashboardCard) return;
+    event.preventDefault();
+
+    const hovered = document.elementFromPoint(event.clientX, event.clientY);
+    const targetCard = hovered ? hovered.closest(".dashboard-card") : null;
+
+    if (!targetCard || targetCard === draggedDashboardCard || targetCard.parentElement !== container) {
+      container.appendChild(draggedDashboardCard);
+      return;
+    }
+
+    const rect = targetCard.getBoundingClientRect();
+    const insertBefore = event.clientY < rect.top + rect.height / 2;
+    if (insertBefore) {
+      container.insertBefore(draggedDashboardCard, targetCard);
+    } else {
+      container.insertBefore(draggedDashboardCard, targetCard.nextElementSibling);
+    }
+  });
+
+  container.addEventListener("drop", (event) => {
+    if (!draggedDashboardCard) return;
+    event.preventDefault();
+    saveDashboardLayout();
+  });
+}
+
+function initDashboardLayoutFeatures() {
+  const container = getDashboardContainer();
+  if (!container) return;
+  loadDashboardLayout();
+  setupDashboardDragAndDrop();
+  setupDashboardResizeObserver();
+}
+
 function monthRange() {
   const n = new Date();
   const y = n.getFullYear();
@@ -267,10 +404,10 @@ async function fetchUsers() {
 
   const tb = qs("usersTable").querySelector("tbody");
   tb.innerHTML = "";
-  adminState.users.forEach((u) => {
+  adminState.users.forEach((u, index) => {
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td>${u.id}</td>
+      <td>${index + 1}</td>
       <td><input data-k="name" value="${u.name || ""}" /></td>
       <td><input data-k="employee_code" value="${u.employee_code || ""}" /></td>
       <td>${u.pin_plain || ""}</td>
@@ -660,6 +797,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       qs("loginForm").onsubmit = doLogin;
       return;
     }
+    initDashboardLayoutFeatures();
     const me = await api("/auth/me");
     if (document.body.dataset.role === "admin" && me.user.role === "ADMIN") return loadAdmin();
     if (document.body.dataset.role === "employee" && me.user.role === "EMPLOYEE") return loadEmployee(me.user);

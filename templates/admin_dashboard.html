@@ -14,119 +14,145 @@
       <button id="logoutBtn">Logout</button>
     </div>
   </header>
-  <main class="grid">
-    <section class="card span-12">
-      <h3>Employee Attendance Summary</h3>
-      <div class="row wrap">
-        <input id="fromDate" type="date" />
-        <input id="toDate" type="date" />
-        <input id="mergedEmployeeCode" placeholder="Employee Code (e.g. EMP001)" />
-        <button id="loadMergedBtn" type="button">Load</button>
-        <a id="mergedExportLink" target="_blank">Download XLSX</a>
+  <main>
+    <div class="dashboard-container">
+    <section class="card dashboard-card resize-height-only full-width-fixed span-12" data-widget-id="admin-employee-attendance-summary">
+      <div class="card-header">
+        <h3>Employee Attendance Summary</h3>
       </div>
-      <div id="mergedSummary" class="kpi-grid"></div>
-      <div class="table-wrap">
-        <table id="mergedAttendanceTable">
-          <thead><tr><th>Date</th><th>Login</th><th>Logout</th><th>Login Method</th><th>Hours</th><th>OT(Hrs)</th><th>Early Logout Time(Hrs)</th><th>Late(Count)</th><th>Break Taken</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="card span-12">
-      <h3>Today's Attendance</h3>
-      <div class="row wrap">
-        <button id="reloadTodayAttendance" type="button">Refresh</button>
-      </div>
-      <div class="table-wrap">
-        <table id="todaysAttendanceTable">
-          <thead><tr><th>EMP_ID</th><th>Date</th><th>Login</th><th>Logout</th><th>Login Method</th><th>Hours</th><th>OT(Hrs)</th><th>Early Logout Time(Hrs)</th><th>Late(Count)</th><th>Break Taken</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="card span-6">
-      <h3>Edit Employee Details</h3>
-      <form id="adminEditAttendanceForm" class="stack">
+      <div class="dashboard-card-body">
         <div class="row wrap">
-          <input id="editEmpCode" placeholder="Employee Code (record to edit)" />
-          <input id="editAttendanceDate" type="date" title="Attendance date of the record to edit" />
-          <button id="loadAttendanceEditBtn" type="button">Load Current</button>
+          <input id="fromDate" type="date" />
+          <input id="toDate" type="date" />
+          <input id="mergedEmployeeCode" placeholder="Employee Code (e.g. EMP001)" />
+          <button id="loadMergedBtn" type="button">Load</button>
+          <a id="mergedExportLink" target="_blank">Download XLSX</a>
         </div>
+        <div id="mergedSummary" class="kpi-grid"></div>
+        <div class="table-wrapper table-scroll">
+          <table id="mergedAttendanceTable">
+            <thead><tr><th>Date</th><th>Login</th><th>Logout</th><th>Login Method</th><th>Hours</th><th>OT(Hrs)</th><th>Early Logout Time(Hrs)</th><th>Late(Count)</th><th>Break Taken</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="card dashboard-card resize-height-only full-width-fixed span-12" data-widget-id="admin-todays-attendance">
+      <div class="card-header">
+        <h3>Today's Attendance</h3>
+      </div>
+      <div class="dashboard-card-body">
         <div class="row wrap">
-          <label for="editLoginTime">Edit Login Date &amp; Time</label>
-          <input id="editLoginTime" type="datetime-local" title="Set updated login date and time" />
-          <label for="editLogoutTime">Edit Logout Date &amp; Time</label>
-          <input id="editLogoutTime" type="datetime-local" title="Set updated logout date and time" />
-          <select id="editBreakTaken">
-            <option value="">Break (No Change)</option>
-            <option value="1">Break Taken = Yes</option>
-            <option value="0">Break Taken = No</option>
-          </select>
-          <select id="editCategoryId"></select>
-          <select id="editShiftId"></select>
-          <button type="submit">Save Changes</button>
+          <button id="reloadTodayAttendance" type="button">Refresh</button>
         </div>
-      </form>
-      <p class="muted">This updates attendance and selected employee category/shift, then recalculates metrics.</p>
-    </section>
-
-    <section class="card span-12">
-      <h3>Users</h3>
-      <form id="createUserForm" class="row wrap">
-        <input id="uName" placeholder="Name" />
-        <input id="uCode" placeholder="Code" />
-        <input id="uPin" placeholder="PIN" />
-        <select id="uRole"><option>EMPLOYEE</option><option>ADMIN</option></select>
-        <select id="uCategory"></select>
-        <select id="uShift"></select>
-        <button type="submit">Add User</button>
-      </form>
-      <div class="table-wrap">
-        <table id="usersTable">
-          <thead><tr><th>ID</th><th>Name</th><th>Code</th><th>PIN</th><th>Role</th><th>Category</th><th>Shift</th><th>Active</th><th>New PIN</th><th>Action</th></tr></thead>
-          <tbody></tbody>
-        </table>
+        <div class="table-wrapper table-scroll">
+          <table id="todaysAttendanceTable">
+            <thead><tr><th>EMP_ID</th><th>Date</th><th>Login</th><th>Logout</th><th>Login Method</th><th>Hours</th><th>OT(Hrs)</th><th>Early Logout Time(Hrs)</th><th>Late(Count)</th><th>Break Taken</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
       </div>
     </section>
 
-    <section class="card span-6">
-      <h3>Categories</h3>
-      <form id="createCategoryForm" class="row wrap">
-        <input id="cName" placeholder="Name" />
-        <input id="cReq" placeholder="Required Hours" />
-        <button type="submit">Add</button>
-      </form>
-      <div class="table-wrap">
-        <table id="categoryTable">
-          <thead><tr><th>ID</th><th>Name</th><th>Required Hours</th><th>Action</th></tr></thead>
-          <tbody></tbody>
-        </table>
+    <section class="card dashboard-card span-6" data-widget-id="admin-edit-employee-details">
+      <div class="card-header">
+        <h3>Edit Employee Details</h3>
+      </div>
+      <div class="dashboard-card-body">
+        <form id="adminEditAttendanceForm" class="stack">
+          <div class="row wrap">
+            <input id="editEmpCode" placeholder="Employee Code (record to edit)" />
+            <input id="editAttendanceDate" type="date" title="Attendance date of the record to edit" />
+            <button id="loadAttendanceEditBtn" type="button">Load Current</button>
+          </div>
+          <div class="row wrap">
+            <label for="editLoginTime">Edit Login Date &amp; Time</label>
+            <input id="editLoginTime" type="datetime-local" title="Set updated login date and time" />
+            <label for="editLogoutTime">Edit Logout Date &amp; Time</label>
+            <input id="editLogoutTime" type="datetime-local" title="Set updated logout date and time" />
+            <select id="editBreakTaken">
+              <option value="">Break (No Change)</option>
+              <option value="1">Break Taken = Yes</option>
+              <option value="0">Break Taken = No</option>
+            </select>
+            <select id="editCategoryId"></select>
+            <select id="editShiftId"></select>
+            <button type="submit">Save Changes</button>
+          </div>
+        </form>
+        <p class="muted">This updates attendance and selected employee category/shift, then recalculates metrics.</p>
       </div>
     </section>
 
-    <section class="card span-6">
-      <h3>Shifts</h3>
-      <form id="createShiftForm" class="row wrap">
-        <input id="sName" placeholder="Name" />
-        <input id="sStart" placeholder="09:00" />
-        <input id="sEnd" placeholder="18:00" />
-        <input id="sGrace" placeholder="15" />
-        <button type="submit">Add</button>
-      </form>
-      <form id="assignShiftForm" class="row wrap">
-        <input id="assignShiftEmpCode" placeholder="Employee Code" />
-        <select id="assignShiftId"></select>
-        <button type="submit">Assign Shift</button>
-      </form>
-      <div class="table-wrap">
-        <table id="shiftTable">
-          <thead><tr><th>ID</th><th>Name</th><th>Start</th><th>End</th><th>Grace</th><th>Action</th></tr></thead>
-          <tbody></tbody>
-        </table>
+    <section class="card dashboard-card span-12" data-widget-id="admin-users">
+      <div class="card-header">
+        <h3>Users</h3>
+      </div>
+      <div class="dashboard-card-body">
+        <form id="createUserForm" class="row wrap">
+          <input id="uName" placeholder="Name" />
+          <input id="uCode" placeholder="Code" />
+          <input id="uPin" placeholder="PIN" />
+          <select id="uRole"><option>EMPLOYEE</option><option>ADMIN</option></select>
+          <select id="uCategory"></select>
+          <select id="uShift"></select>
+          <button type="submit">Add User</button>
+        </form>
+        <div class="table-wrapper table-scroll">
+          <table id="usersTable">
+            <thead><tr><th>Sl. No.</th><th>Name</th><th>Code</th><th>PIN</th><th>Role</th><th>Category</th><th>Shift</th><th>Active</th><th>New PIN</th><th>Action</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
       </div>
     </section>
+
+    <section class="card dashboard-card span-6" data-widget-id="admin-categories">
+      <div class="card-header">
+        <h3>Categories</h3>
+      </div>
+      <div class="dashboard-card-body">
+        <form id="createCategoryForm" class="row wrap">
+          <input id="cName" placeholder="Name" />
+          <input id="cReq" placeholder="Required Hours" />
+          <button type="submit">Add</button>
+        </form>
+        <div class="table-wrapper table-scroll">
+          <table id="categoryTable">
+            <thead><tr><th>ID</th><th>Name</th><th>Required Hours</th><th>Action</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="card dashboard-card span-6" data-widget-id="admin-shifts">
+      <div class="card-header">
+        <h3>Shifts</h3>
+      </div>
+      <div class="dashboard-card-body">
+        <form id="createShiftForm" class="row wrap">
+          <input id="sName" placeholder="Name" />
+          <input id="sStart" placeholder="09:00" />
+          <input id="sEnd" placeholder="18:00" />
+          <input id="sGrace" placeholder="15" />
+          <button type="submit">Add</button>
+        </form>
+        <form id="assignShiftForm" class="row wrap">
+          <input id="assignShiftEmpCode" placeholder="Employee Code" />
+          <select id="assignShiftId"></select>
+          <button type="submit">Assign Shift</button>
+        </form>
+        <div class="table-wrapper table-scroll">
+          <table id="shiftTable">
+            <thead><tr><th>ID</th><th>Name</th><th>Start</th><th>End</th><th>Grace</th><th>Action</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+    </div>
   </main>
   <script src="/static/dashboard.js"></script>
 </body>

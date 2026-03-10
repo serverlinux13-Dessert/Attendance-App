@@ -15,6 +15,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import qrcode
+import requests
 from flask import Flask, jsonify, redirect, render_template, request, send_file, send_from_directory, session, url_for
 from flask_cors import CORS
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -100,6 +101,70 @@ def conn_db():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def restore_db_from_github():
+    try:
+        if DB_PATH.exists():
+            return
+
+        repo = os.getenv("GITHUB_REPO", "").strip()
+        if not repo:
+            return
+
+        raw_url = f"https://raw.githubusercontent.com/{repo}/main/db_backup/database.db"
+        response = requests.get(raw_url, timeout=20)
+        if response.status_code == 200 and response.content:
+            DB_PATH.write_bytes(response.content)
+    except Exception:
+        pass
+
+
+def backup_db_to_github():
+    if not DB_PATH.exists():
+        return
+
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    repo = os.getenv("GITHUB_REPO", "").strip()
+    if not token or not repo:
+        return
+
+    try:
+        encoded_db = base64.b64encode(DB_PATH.read_bytes()).decode("utf-8")
+    except Exception:
+        return
+
+    contents_url = f"https://api.github.com/repos/{repo}/contents/db_backup/database.db"
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    sha = None
+    try:
+        metadata_response = requests.get(contents_url, headers=headers, timeout=20)
+    except Exception:
+        return
+
+    if metadata_response.status_code == 200:
+        try:
+            sha = (metadata_response.json() or {}).get("sha")
+        except Exception:
+            return
+    elif metadata_response.status_code != 404:
+        return
+
+    payload = {
+        "message": "Auto backup database",
+        "content": encoded_db,
+    }
+    if sha:
+        payload["sha"] = sha
+
+    try:
+        requests.put(contents_url, headers=headers, json=payload, timeout=30)
+    except Exception:
+        return
 
 
 def has_col(conn, table, col):
@@ -824,6 +889,14 @@ def midnight_close():
 
     return jsonify({"message": "Midnight close completed", "attendance_date": target.isoformat(), "absent_marked": absent, "system_logout_done": auto_logout})
 
+
+@app.get("/admin/backup-db")
+@api_guard("ADMIN")
+def backup_db():
+    backup_db_to_github()
+    return {"message": "Database backed up"}
+
+
 def parse_filters():
     try:
         dfrom, dto = resolve_date_range(request.args.get("from"), request.args.get("to"))
@@ -1518,7 +1591,7 @@ def export_my_attendance_xlsx():
     out.seek(0)
     return send_file(out, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name=f"my_attendance_{dfrom.isoformat()}_{dto.isoformat()}.xlsx")
 
-
+restore_db_from_github()
 init_db()
 
 if __name__ == "__main__":

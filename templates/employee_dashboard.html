@@ -14,46 +14,67 @@
       <button id="logoutBtn">Logout</button>
     </div>
   </header>
-  <main class="grid one">
-    <section class="card span-12 profile-card">
-      <h3>Employee Info</h3>
-      <div class="kpi-grid">
-        <div class="kpi">
-          <div class="muted">Employee Name</div>
-          <div><b id="empInfoName">-</b></div>
-        </div>
-        <div class="kpi">
-          <div class="muted">Employee Code</div>
-          <div><b id="empInfoCode">-</b></div>
-        </div>
-        <div class="kpi">
-          <div class="muted">Category</div>
-          <div><b id="empInfoCategory">-</b></div>
-        </div>
-        <div class="kpi">
-          <div class="muted">Shift Timings (Login - Logout)</div>
-          <div><b id="empInfoShiftTimings">-</b></div>
+  <main>
+    <div class="dashboard-container">
+    <section class="card dashboard-card span-12" data-widget-id="employee-info">
+      <div class="card-header">
+        <h3>Employee Info</h3>
+      </div>
+      <div class="dashboard-card-body">
+        <div class="kpi-grid">
+          <div class="kpi">
+            <div class="muted">Employee Name</div>
+            <div><b id="empInfoName">-</b></div>
+          </div>
+          <div class="kpi">
+            <div class="muted">Employee Code</div>
+            <div><b id="empInfoCode">-</b></div>
+          </div>
+          <div class="kpi">
+            <div class="muted">Category</div>
+            <div><b id="empInfoCategory">-</b></div>
+          </div>
+          <div class="kpi">
+            <div class="muted">Shift Timings (Login - Logout)</div>
+            <div><b id="empInfoShiftTimings">-</b></div>
+          </div>
         </div>
       </div>
     </section>
-    <section class="card span-4"><h3>My Summary</h3><div id="empSummary" class="kpi-grid"></div></section>
-    <section class="card span-4">
-      <h3>Break Status At Logout</h3>
-      <div class="row wrap">
-        <select id="logoutBreakTaken">
-          <option value="">Select break status</option>
-          <option value="1">Yes, I took a break</option>
-          <option value="0">No break taken</option>
-        </select>
-        <button id="saveBreakBtn" type="button">Save Break Status</button>
+    <section class="card dashboard-card span-4" data-widget-id="employee-summary">
+      <div class="card-header">
+        <h3>My Summary</h3>
       </div>
-      <p id="breakStatusMsg" class="muted">Save break status anytime. Logout can also save selected value optionally.</p>
+      <div class="dashboard-card-body">
+        <div id="empSummary" class="kpi-grid"></div>
+      </div>
     </section>
-    <section class="card span-12">
-      <h3>My Attendance</h3>
-      <div class="row wrap"><input id="fromDate" type="date" /><input id="toDate" type="date" /><button id="reloadAttendance">Load</button><a id="myExportLink" href="#" target="_blank" rel="noopener">Download XLSX</a></div>
-      <div class="table-wrap"><table id="attendanceTable"><thead><tr><th>Date</th><th>Login</th><th>Logout</th><th>OT(Hrs)</th><th>Early Logout Time</th><th>Late(Count)</th><th>Break</th><th>Status</th></tr></thead><tbody></tbody></table></div>
+    <section class="card dashboard-card span-4" data-widget-id="employee-break-status">
+      <div class="card-header">
+        <h3>Break Status At Logout</h3>
+      </div>
+      <div class="dashboard-card-body">
+        <div class="row wrap">
+          <select id="logoutBreakTaken">
+            <option value="">Select break status</option>
+            <option value="1">Yes, I took a break</option>
+            <option value="0">No break taken</option>
+          </select>
+          <button id="saveBreakBtn" type="button">Save Break Status</button>
+        </div>
+        <p id="breakStatusMsg" class="muted">Save break status anytime. Logout can also save selected value optionally.</p>
+      </div>
     </section>
+    <section class="card dashboard-card span-12" data-widget-id="employee-attendance">
+      <div class="card-header">
+        <h3>My Attendance</h3>
+      </div>
+      <div class="dashboard-card-body">
+        <div class="row wrap"><input id="fromDate" type="date" /><input id="toDate" type="date" /><button id="reloadAttendance">Load</button><a id="myExportLink" href="#" target="_blank" rel="noopener">Download XLSX</a></div>
+        <div class="table-wrapper table-scroll"><table id="attendanceTable"><thead><tr><th>Date</th><th>Login</th><th>Logout</th><th>OT(Hrs)</th><th>Early Logout Time</th><th>Late(Count)</th><th>Break</th><th>Status</th></tr></thead><tbody></tbody></table></div>
+      </div>
+    </section>
+    </div>
   </main>
   <script src="/static/dashboard.js"></script>
 </body>
