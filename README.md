@@ -126,6 +126,25 @@ $env:SECRET_KEY = "<long-random-secret>"
 .\run-prod.ps1
 ```
 
+## Deploy on Render
+
+If Render shows `No open HTTP ports detected on 0.0.0.0`, your start command is usually binding to `127.0.0.1` (or a fixed port) instead of Render's required host/port.
+
+Use this start command:
+
+```bash
+gunicorn --workers 1 --threads 4 --bind 0.0.0.0:$PORT wsgi:application
+```
+
+This repository includes a `render.yaml` blueprint with the correct settings. Import the repo in Render, or copy these values into your existing service:
+
+- **Build Command**: `pip install -r requirements.txt`
+- **Start Command**: `gunicorn --workers 1 --threads 4 --bind 0.0.0.0:$PORT wsgi:application`
+- **Environment**:
+  - `APP_ENV=production`
+  - `SECRET_KEY=<set in Render env vars>`
+  - `SESSION_COOKIE_SECURE=1`
+
 ## URLs
 
 - Login: `http://localhost:8000/login`
