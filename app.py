@@ -298,6 +298,18 @@ def user_profile(conn, user_id):
     ).fetchone()
 
 
+def round_overtime_hours(value):
+    value = max(0.0, float(value or 0.0))
+    whole_hours = int(value)
+    fraction = value - whole_hours
+
+    if fraction < 0.45:
+        return float(whole_hours)
+    if fraction < 0.95:
+        return whole_hours + 0.5
+    return float(whole_hours + 1)
+
+
 def calc_metrics(login_iso, logout_iso, profile):
     login = parse_dt(login_iso).astimezone(IST)
     logout = parse_dt(logout_iso).astimezone(IST)
@@ -312,7 +324,7 @@ def calc_metrics(login_iso, logout_iso, profile):
     status = "PRESENT"
     return {
         "total_hours": round(total_hours, 4),
-        "overtime": round(ot, 4),
+        "overtime": round_overtime_hours(ot),
         "late_mark": late,
         "status": status,
     }
