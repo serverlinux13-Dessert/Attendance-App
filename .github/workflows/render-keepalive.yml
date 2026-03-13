@@ -1,0 +1,46 @@
+name: Render Keep Alive Monitor
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # every 5 minutes
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Ping Render service with retries and latency logging
+        run: |
+          URL="https://dessert-island-attendance.onrender.com/health"
+
+          echo "Starting health check for $URL"
+
+          ATTEMPTS=5
+          DELAY=5
+
+          for i in $(seq 1 $ATTEMPTS); do
+
+            echo "Attempt $i of $ATTEMPTS"
+
+            RESPONSE=$(curl -s -o /dev/null \
+              -w "HTTP:%{http_code} TIME:%{time_total}" \
+              --connect-timeout 5 \
+              --max-time 10 \
+              $URL)
+
+            echo "Response: $RESPONSE"
+
+            STATUS=$(echo $RESPONSE | awk -F'HTTP:' '{print $2}' | awk '{print $1}')
+
+            if [ "$STATUS" = "200" ]; then
+              echo "Server is healthy"
+              exit 0
+            fi
+
+            echo "Server not healthy yet. Retrying in $DELAY seconds..."
+            sleep $DELAY
+          done
+
+          echo "Server failed health checks after $ATTEMPTS attempts"
+          exit 1
