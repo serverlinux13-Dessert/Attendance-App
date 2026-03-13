@@ -15,14 +15,15 @@ jobs:
           LOGIN_URL="https://dessert-island-attendance.onrender.com/auth/login"
           BACKUP_URL="https://dessert-island-attendance.onrender.com/admin/backup-db"
 
-          EMAIL="${{ secrets.ADMIN_EMAIL }}"
-          PASSWORD="${{ secrets.ADMIN_PASSWORD }}"
+          EMPLOYEE_CODE="${{ secrets.ADMIN_EMPLOYEE_CODE }}"
+          PIN="${{ secrets.ADMIN_PIN }}"
 
           echo "Logging into admin account..."
 
           curl -s -c cookies.txt \
             -X POST \
-            -d "email=$EMAIL&password=$PASSWORD" \
+            -H "Content-Type: application/json" \
+            -d "{\"employee_code\":\"$EMPLOYEE_CODE\",\"pin\":\"$PIN\"}" \
             $LOGIN_URL
 
           echo "Triggering backup endpoint..."
