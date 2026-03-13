@@ -1,0 +1,37 @@
+name: Render Backup Trigger
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Login and trigger backup
+        run: |
+          LOGIN_URL="https://dessert-island-attendance.onrender.com/auth/login"
+          BACKUP_URL="https://dessert-island-attendance.onrender.com/admin/backup-db"
+
+          EMAIL="${{ secrets.ADMIN_EMAIL }}"
+          PASSWORD="${{ secrets.ADMIN_PASSWORD }}"
+
+          echo "Logging into admin account..."
+
+          curl -s -c cookies.txt \
+            -H "Content-Type: application/json" \
+            -X POST \
+            -d "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}" \
+            $LOGIN_URL
+
+          echo "Triggering backup endpoint..."
+
+          curl -s \
+            --retry 5 \
+            --retry-delay 5 \
+            -b cookies.txt \
+            $BACKUP_URL
+
+          echo "Backup trigger completed"
