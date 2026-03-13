@@ -122,17 +122,18 @@ def restore_db_from_github():
 
 def backup_db_to_github():
     if not DB_PATH.exists():
-        return
+        return False, "Local database file not found"
 
     token = os.getenv("GITHUB_TOKEN", "").strip()
     repo = os.getenv("GITHUB_REPO", "").strip()
     if not token or not repo:
-        return
+        return False, "GITHUB_TOKEN or GITHUB_REPO is missing"
 
     try:
         encoded_db = base64.b64encode(DB_PATH.read_bytes()).decode("utf-8")
-    except Exception:
-        return
+    except Exception as exc:
+        app.logger.exception("Failed to read database for backup")
+        return False, f"Failed to read local database: {exc}"
 
     contents_url = f"https://api.github.com/repos/{repo}/contents/db_backup/database.db"
     headers = {
@@ -143,16 +144,18 @@ def backup_db_to_github():
     sha = None
     try:
         metadata_response = requests.get(contents_url, headers=headers, timeout=20)
-    except Exception:
-        return
+    except Exception as exc:
+        app.logger.exception("Failed to fetch backup metadata from GitHub")
+        return False, f"Failed to contact GitHub API while reading metadata: {exc}"
 
     if metadata_response.status_code == 200:
         try:
             sha = (metadata_response.json() or {}).get("sha")
-        except Exception:
-            return
+        except Exception as exc:
+            app.logger.exception("Failed to parse GitHub metadata response")
+            return False, f"Invalid metadata response from GitHub: {exc}"
     elif metadata_response.status_code != 404:
-        return
+        return False, f"GitHub metadata request failed with status {metadata_response.status_code}: {metadata_response.text[:200]}"
 
     payload = {
         "message": "Auto backup database",
@@ -162,9 +165,15 @@ def backup_db_to_github():
         payload["sha"] = sha
 
     try:
-        requests.put(contents_url, headers=headers, json=payload, timeout=30)
-    except Exception:
-        return
+        upload_response = requests.put(contents_url, headers=headers, json=payload, timeout=30)
+    except Exception as exc:
+        app.logger.exception("Failed to upload backup to GitHub")
+        return False, f"Failed to contact GitHub API while uploading backup: {exc}"
+
+    if upload_response.status_code not in {200, 201}:
+        return False, f"GitHub backup upload failed with status {upload_response.status_code}: {upload_response.text[:200]}"
+
+    return True, "Database backed up"
 
 
 def has_col(conn, table, col):
@@ -905,8 +914,11 @@ def midnight_close():
 @app.get("/admin/backup-db")
 @api_guard("ADMIN")
 def backup_db():
-    backup_db_to_github()
-    return {"message": "Database backed up"}
+    ok, message = backup_db_to_github()
+    if not ok:
+        app.logger.warning("Backup request failed: %s", message)
+        return {"message": message}, 500
+    return {"message": message}
 
 
 def parse_filters():
