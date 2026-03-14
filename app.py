@@ -912,7 +912,6 @@ def midnight_close():
 
 
 @app.get("/admin/backup-db")
-@api_guard("ADMIN")
 def backup_db():
     ok, message = backup_db_to_github()
     if not ok:
