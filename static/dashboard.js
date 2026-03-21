@@ -171,12 +171,30 @@ function kpiValue(v) {
   return v == null ? 0 : v;
 }
 
+function formatKpiLabel(key) {
+  const labels = {
+    absent_count: "Absent Count",
+    break_taken_days: "Break Taken Days",
+    late_count: "Late Count",
+    overtime_hours: "Overtime Hours",
+    present_count: "Present Count",
+    total_days: "Total Days",
+    total_days_worked: "Total Days Worked",
+    total_hours: "Total Hours",
+  };
+  return labels[key] || String(key || "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatYesNo(value) {
+  return Number(value || 0) === 1 ? "Yes" : "No";
+}
+
 function renderOrderedKpis(el, obj, keys) {
   el.innerHTML = "";
   keys.forEach((k) => {
     const d = document.createElement("div");
     d.className = "kpi";
-    d.innerHTML = `<div class="muted">${k}</div><div><b>${kpiValue(obj && obj[k])}</b></div>`;
+    d.innerHTML = `<div class="muted">${formatKpiLabel(k)}</div><div><b>${kpiValue(obj && obj[k])}</b></div>`;
     el.appendChild(d);
   });
 }
@@ -364,17 +382,17 @@ async function loadMergedEmployeeView() {
     const summary = d.summary || {};
     renderOrderedKpis(qs("mergedSummary"), {
       absent_count: summary.absent_count,
-      total_hours: summary.total_hours,
-      overtime_hours: summary.overtime_hours,
       total_days_worked: summary.total_days_worked,
       late_count: summary.late_count,
-    }, ["absent_count", "total_hours", "overtime_hours", "total_days_worked", "late_count"]);
+      total_hours: summary.total_hours,
+      overtime_hours: summary.overtime_hours,
+    }, ["absent_count", "total_days_worked", "late_count", "total_hours", "overtime_hours"]);
 
     const tb = qs("mergedAttendanceTable").querySelector("tbody");
     tb.innerHTML = "";
     (d.attendance || []).forEach((i) => {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${i.attendance_date || ""}</td><td>${formatDashboardDateTime(i.login_time)}</td><td>${formatDashboardDateTime(i.logout_time)}</td><td>${i.login_method || "-"}</td><td>${kpiValue(i.total_hours)}</td><td>${kpiValue(i.overtime)}</td><td>${formatHoursToHHMM(i.early_logout_hours)}</td><td>${kpiValue(i.late_mark)}</td><td>${Number(i.break_taken || 0) === 1 ? "Yes" : "No"}</td>`;
+      tr.innerHTML = `<td>${i.attendance_date || ""}</td><td>${formatDashboardDateTime(i.login_time)}</td><td>${formatDashboardDateTime(i.logout_time)}</td><td>${i.login_method || "-"}</td><td>${kpiValue(i.total_hours)}</td><td>${kpiValue(i.overtime)}</td><td>${formatHoursToHHMM(i.early_logout_hours)}</td><td>${formatYesNo(i.late_mark)}</td><td>${formatYesNo(i.break_taken)}</td>`;
       tb.appendChild(tr);
     });
     setMergedExportLink();
@@ -393,7 +411,7 @@ async function loadTodayAttendance() {
   tb.innerHTML = "";
   (d.items || []).forEach((i) => {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${i.employee_code || ""}</td><td>${i.attendance_date || ""}</td><td>${formatDashboardDateTime(i.login_time)}</td><td>${formatDashboardDateTime(i.logout_time)}</td><td>${i.login_method || "-"}</td><td>${kpiValue(i.total_hours)}</td><td>${kpiValue(i.overtime)}</td><td>${formatHoursToHHMM(i.early_logout_hours)}</td><td>${kpiValue(i.late_mark)}</td><td>${Number(i.break_taken || 0) === 1 ? "Yes" : "No"}</td>`;
+    tr.innerHTML = `<td>${i.employee_code || ""}</td><td>${i.attendance_date || ""}</td><td>${formatDashboardDateTime(i.login_time)}</td><td>${formatDashboardDateTime(i.logout_time)}</td><td>${i.login_method || "-"}</td><td>${kpiValue(i.total_hours)}</td><td>${kpiValue(i.overtime)}</td><td>${formatHoursToHHMM(i.early_logout_hours)}</td><td>${formatYesNo(i.late_mark)}</td><td>${formatYesNo(i.break_taken)}</td>`;
     tb.appendChild(tr);
   });
 }
@@ -786,7 +804,7 @@ async function fetchEmployeeAttendance() {
   tb.innerHTML = "";
   (d.items || []).forEach((i) => {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${i.attendance_date || ""}</td><td>${formatDashboardDateTime(i.login_time)}</td><td>${formatDashboardDateTime(i.logout_time)}</td><td>${kpiValue(i.overtime)}</td><td>${formatHoursToHHMM(i.early_logout_hours)}</td><td>${kpiValue(i.late_mark)}</td><td>${(i.break_taken || 0) === 1 ? "Yes" : "No"}</td><td>${i.status || ""}</td>`;
+    tr.innerHTML = `<td>${i.attendance_date || ""}</td><td>${formatDashboardDateTime(i.login_time)}</td><td>${formatDashboardDateTime(i.logout_time)}</td><td>${kpiValue(i.overtime)}</td><td>${formatHoursToHHMM(i.early_logout_hours)}</td><td>${formatYesNo(i.late_mark)}</td><td>${formatYesNo(i.break_taken)}</td><td>${i.status || ""}</td>`;
     tb.appendChild(tr);
   });
 }
@@ -806,4 +824,3 @@ window.addEventListener("DOMContentLoaded", async () => {
     else alert(e.message);
   }
 });
-
