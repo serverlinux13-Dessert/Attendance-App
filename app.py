@@ -5,6 +5,7 @@ import hmac
 import ipaddress
 import io
 import json
+import math
 import os
 import secrets
 import sqlite3
@@ -309,14 +310,7 @@ def user_profile(conn, user_id):
 
 def round_overtime_hours(value):
     value = max(0.0, float(value or 0.0))
-    whole_hours = int(value)
-    fraction = value - whole_hours
-
-    if fraction < 0.45:
-        return float(whole_hours)
-    if fraction < 0.95:
-        return whole_hours + 0.5
-    return float(whole_hours + 1)
+    return math.floor(value * 2) / 2
 
 
 def calc_metrics(login_iso, logout_iso, profile):
