@@ -1449,12 +1449,36 @@ def admin_attendance_bulk_add():
         else:
             return jsonify({"message": f"break_taken must be true/false at row {idx}"}), 400
 
+        category_id = row.get("category_id")
+        if category_id in {"", None}:
+            category_id = None
+        else:
+            try:
+                category_id = int(category_id)
+            except Exception:
+                return jsonify({"message": f"category_id must be an integer at row {idx}"}), 400
+            if category_id < 1:
+                return jsonify({"message": f"category_id must be >= 1 at row {idx}"}), 400
+
+        shift_id = row.get("shift_id")
+        if shift_id in {"", None}:
+            shift_id = None
+        else:
+            try:
+                shift_id = int(shift_id)
+            except Exception:
+                return jsonify({"message": f"shift_id must be an integer at row {idx}"}), 400
+            if shift_id < 1:
+                return jsonify({"message": f"shift_id must be >= 1 at row {idx}"}), 400
+
         normalized.append(
             {
                 "attendance_date": attendance_date,
                 "login_time": login_time if login_time else None,
                 "logout_time": logout_time if logout_time else None,
                 "break_taken": break_taken,
+                "category_id": category_id,
+                "shift_id": shift_id,
             }
         )
 
@@ -1464,8 +1488,39 @@ def admin_attendance_bulk_add():
         if not user:
             return jsonify({"message": "User not found"}), 404
         user_id = int(user["id"])
+
+        category_ids = sorted({item["category_id"] for item in normalized if item["category_id"] is not None})
+        if category_ids:
+            placeholders = ",".join("?" for _ in category_ids)
+            found_category_ids = {
+                int(r["id"])
+                for r in conn.execute(f"SELECT id FROM employee_categories WHERE id IN ({placeholders})", tuple(category_ids)).fetchall()
+            }
+            missing_categories = [x for x in category_ids if x not in found_category_ids]
+            if missing_categories:
+                return jsonify({"message": f"Category not found: {missing_categories[0]}"}), 404
+
+        shift_ids = sorted({item["shift_id"] for item in normalized if item["shift_id"] is not None})
+        if shift_ids:
+            placeholders = ",".join("?" for _ in shift_ids)
+            found_shift_ids = {int(r["id"]) for r in conn.execute(f"SELECT id FROM shifts WHERE id IN ({placeholders})", tuple(shift_ids)).fetchall()}
+            missing_shifts = [x for x in shift_ids if x not in found_shift_ids]
+            if missing_shifts:
+                return jsonify({"message": f"Shift not found: {missing_shifts[0]}"}), 404
         try:
             for item in normalized:
+                if item["category_id"] is not None or item["shift_id"] is not None:
+                    fields = []
+                    params = []
+                    if item["category_id"] is not None:
+                        fields.append("category_id=?")
+                        params.append(item["category_id"])
+                    if item["shift_id"] is not None:
+                        fields.append("shift_id=?")
+                        params.append(item["shift_id"])
+                    params.append(user_id)
+                    conn.execute(f"UPDATE users SET {', '.join(fields)} WHERE id=?", tuple(params))
+
                 existing = conn.execute(
                     "SELECT id FROM attendance WHERE user_id=? AND attendance_date=?",
                     (user_id, item["attendance_date"]),
@@ -1505,6 +1560,20 @@ def admin_attendance_bulk_add():
                         ),
                     )
                     attendance_id = int(cur.lastrowid)
+
+                latest_attendance = conn.execute("SELECT * FROM attendance WHERE id=?", (attendance_id,)).fetchone()
+                if latest_attendance and (
+                    item["shift_id"] is not None
+                    or not latest_attendance["scheduled_shift_start"]
+                    or not latest_attendance["scheduled_shift_end"]
+                    or latest_attendance["scheduled_grace_minutes"] is None
+                ):
+                    schedule_profile = profile_for_attendance(conn, user_id)
+                    schedule = snapshot_schedule_fields(schedule_profile)
+                    conn.execute(
+                        "UPDATE attendance SET scheduled_shift_start=?,scheduled_shift_end=?,scheduled_grace_minutes=?,updated_at=? WHERE id=?",
+                        (schedule["scheduled_shift_start"], schedule["scheduled_shift_end"], schedule["scheduled_grace_minutes"], now_iso(), attendance_id),
+                    )
 
                 latest = conn.execute("SELECT id,login_time,logout_time FROM attendance WHERE id=?", (attendance_id,)).fetchone()
                 if latest["login_time"] and latest["logout_time"]:
