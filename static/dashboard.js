@@ -536,6 +536,8 @@ function setBulkAttendanceMessage(message, isError = false) {
 }
 
 function createBulkAttendanceSlot(data = {}) {
+  const selectedCategoryId = data.category_id == null ? "" : String(data.category_id);
+  const selectedShiftId = data.shift_id == null ? "" : String(data.shift_id);
   const wrapper = document.createElement("div");
   wrapper.className = "bulk-attendance-slot";
   wrapper.innerHTML = `
@@ -544,6 +546,14 @@ function createBulkAttendanceSlot(data = {}) {
       <input data-k="attendance_date" type="date" title="Attendance date" value="${data.attendance_date || ""}" />
       <input data-k="login_time" type="datetime-local" title="Login date and time" value="${data.login_time || ""}" />
       <input data-k="logout_time" type="datetime-local" title="Logout date and time" value="${data.logout_time || ""}" />
+      <select data-k="category_id" title="Category override for this slot">
+        <option value="">Category (No Change)</option>
+        ${options(adminState.categories, "id", "name", selectedCategoryId)}
+      </select>
+      <select data-k="shift_id" title="Shift override for this slot">
+        <option value="">Shift (No Change)</option>
+        ${options(adminState.shifts, "id", "name", selectedShiftId)}
+      </select>
       <select data-k="break_taken" title="Break taken">
         <option value="1" ${(data.break_taken == null || Number(data.break_taken) === 1) ? "selected" : ""}>Break Taken = Yes</option>
         <option value="0" ${Number(data.break_taken) === 0 ? "selected" : ""}>Break Taken = No</option>
@@ -557,6 +567,24 @@ function createBulkAttendanceSlot(data = {}) {
     if (container && !container.children.length) addBulkAttendanceSlot();
   };
   return wrapper;
+}
+
+function syncBulkSlotSelectOptions() {
+  const container = qs("bulkAttendanceSlots");
+  const rows = Array.from(container ? container.querySelectorAll(".bulk-attendance-slot") : []);
+  rows.forEach((slot) => {
+    const categorySelect = slot.querySelector('[data-k="category_id"]');
+    if (categorySelect) {
+      const selected = categorySelect.value || "";
+      categorySelect.innerHTML = `<option value="">Category (No Change)</option>${options(adminState.categories, "id", "name", selected)}`;
+    }
+
+    const shiftSelect = slot.querySelector('[data-k="shift_id"]');
+    if (shiftSelect) {
+      const selected = shiftSelect.value || "";
+      shiftSelect.innerHTML = `<option value="">Shift (No Change)</option>${options(adminState.shifts, "id", "name", selected)}`;
+    }
+  });
 }
 
 function addBulkAttendanceSlot(data = {}) {
@@ -586,11 +614,21 @@ function parseBulkAttendanceSlots() {
     const attendance_date = (slot.querySelector('[data-k="attendance_date"]').value || "").trim();
     const login_time = (slot.querySelector('[data-k="login_time"]').value || "").trim();
     const logout_time = (slot.querySelector('[data-k="logout_time"]').value || "").trim();
+    const category_id_raw = (slot.querySelector('[data-k="category_id"]').value || "").trim();
+    const shift_id_raw = (slot.querySelector('[data-k="shift_id"]').value || "").trim();
     const break_taken = Number(slot.querySelector('[data-k="break_taken"]').value);
+    const category_id = category_id_raw === "" ? null : Number(category_id_raw);
+    const shift_id = shift_id_raw === "" ? null : Number(shift_id_raw);
     if (!employee_code) throw new Error(`Employee code is required at slot ${line}.`);
     if (!attendance_date) throw new Error(`Attendance date is required at slot ${line}.`);
     if (Number.isNaN(break_taken) || ![0, 1].includes(break_taken)) {
       throw new Error(`Break value must be Yes or No at slot ${line}.`);
+    }
+    if (category_id_raw !== "" && (!Number.isInteger(category_id) || category_id <= 0)) {
+      throw new Error(`Category must be selected from the list at slot ${line}.`);
+    }
+    if (shift_id_raw !== "" && (!Number.isInteger(shift_id) || shift_id <= 0)) {
+      throw new Error(`Shift must be selected from the list at slot ${line}.`);
     }
     if (!grouped.has(employee_code)) grouped.set(employee_code, []);
     grouped.get(employee_code).push({
@@ -598,6 +636,8 @@ function parseBulkAttendanceSlots() {
       login_time: login_time || null,
       logout_time: logout_time || null,
       break_taken,
+      category_id,
+      shift_id,
     });
   });
 
@@ -690,6 +730,7 @@ async function fetchCategories() {
 
   fillSelect(qs("uCategory"), adminState.categories, "id", "name");
   fillSelect(qs("editCategoryId"), adminState.categories, "id", "name", "Category (No Change)");
+  syncBulkSlotSelectOptions();
 }
 
 async function createCategory(e) {
@@ -759,6 +800,7 @@ async function fetchShifts() {
   fillSelect(qs("uShift"), adminState.shifts, "id", "name");
   fillSelect(qs("assignShiftId"), adminState.shifts, "id", "name");
   fillSelect(qs("editShiftId"), adminState.shifts, "id", "name", "Shift (No Change)");
+  syncBulkSlotSelectOptions();
 }
 
 async function createShift(e) {
