@@ -330,12 +330,50 @@ def calc_metrics(login_iso, logout_iso, profile):
     }
 
 
+def snapshot_schedule_fields(profile):
+    return {
+        "scheduled_shift_start": str(profile["shift_start"]),
+        "scheduled_shift_end": str(profile["shift_end"]),
+        "scheduled_grace_minutes": int(profile["grace_minutes"] or 0),
+    }
+
+
+def profile_for_attendance(conn, user_id, attendance_row=None):
+    if attendance_row:
+        sst = attendance_row["scheduled_shift_start"] if "scheduled_shift_start" in attendance_row.keys() else None
+        set_ = attendance_row["scheduled_shift_end"] if "scheduled_shift_end" in attendance_row.keys() else None
+        sgm = attendance_row["scheduled_grace_minutes"] if "scheduled_grace_minutes" in attendance_row.keys() else None
+        if sst and set_ and sgm is not None:
+            return {
+                "shift_start": sst,
+                "shift_end": set_,
+                "grace_minutes": int(sgm),
+            }
+    p = user_profile(conn, user_id)
+    if not p:
+        return {"shift_start": "09:00", "shift_end": "18:00", "grace_minutes": 15}
+    return {
+        "shift_start": p["shift_start"],
+        "shift_end": p["shift_end"],
+        "grace_minutes": int(p["grace_minutes"] or 0),
+    }
+
+
+def late_mark_for_login(login_iso, profile):
+    login = parse_dt(login_iso).astimezone(IST)
+    st = datetime.combine(login.date(), time.fromisoformat(profile["shift_start"]), tzinfo=IST)
+    return int(login > st + timedelta(minutes=int(profile["grace_minutes"] or 0)))
+
+
 def execute_attendance_session_action(conn, user_id, purpose, action_iso, login_method=None):
     if purpose == "login":
         day = now_ist().date().isoformat()
         method = str(login_method or "UNKNOWN").strip().upper()
         if method not in {"QR", "OTP"}:
             method = "UNKNOWN"
+        profile = profile_for_attendance(conn, user_id)
+        schedule = snapshot_schedule_fields(profile)
+        late_mark = late_mark_for_login(action_iso, profile)
         open_row = conn.execute("SELECT id FROM attendance WHERE user_id=? AND login_time IS NOT NULL AND logout_time IS NULL ORDER BY id DESC LIMIT 1", (user_id,)).fetchone()
         if open_row:
             return {"message": "User already logged in"}, 400
@@ -345,16 +383,33 @@ def execute_attendance_session_action(conn, user_id, purpose, action_iso, login_
             return {"message": "Attendance already captured for today"}, 400
 
         if today and not today["login_time"]:
-            conn.execute("UPDATE attendance SET login_time=?,login_method=?,status='PRESENT',system_logout=0,updated_at=? WHERE id=?", (action_iso, method, action_iso, today["id"]))
+            conn.execute(
+                """
+                UPDATE attendance
+                SET login_time=?,login_method=?,total_hours=NULL,overtime=NULL,late_mark=?,status='PRESENT',system_logout=0,
+                    scheduled_shift_start=?,scheduled_shift_end=?,scheduled_grace_minutes=?,updated_at=?
+                WHERE id=?
+                """,
+                (action_iso, method, late_mark, schedule["scheduled_shift_start"], schedule["scheduled_shift_end"], schedule["scheduled_grace_minutes"], action_iso, today["id"]),
+            )
         else:
-            conn.execute("INSERT INTO attendance (user_id,attendance_date,login_time,login_method,break_taken,status,created_at,updated_at) VALUES (?,?,?,?,1,'PRESENT',?,?)", (user_id, day, action_iso, method, action_iso, action_iso))
+            conn.execute(
+                """
+                INSERT INTO attendance (
+                    user_id,attendance_date,login_time,login_method,late_mark,break_taken,status,
+                    scheduled_shift_start,scheduled_shift_end,scheduled_grace_minutes,created_at,updated_at
+                )
+                VALUES (?,?,?,?,?,1,'PRESENT',?,?,?,?,?)
+                """,
+                (user_id, day, action_iso, method, late_mark, schedule["scheduled_shift_start"], schedule["scheduled_shift_end"], schedule["scheduled_grace_minutes"], action_iso, action_iso),
+            )
         return {"message": "Login Recorded"}, 200
 
     if purpose == "logout":
         rec = conn.execute("SELECT * FROM attendance WHERE user_id=? AND login_time IS NOT NULL AND logout_time IS NULL ORDER BY id DESC LIMIT 1", (user_id,)).fetchone()
         if not rec:
             return {"message": "No login found"}, 400
-        profile = user_profile(conn, user_id)
+        profile = profile_for_attendance(conn, user_id, rec)
         m = calc_metrics(rec["login_time"], action_iso, profile)
         conn.execute("UPDATE attendance SET logout_time=?,total_hours=?,overtime=?,late_mark=?,status=?,updated_at=? WHERE id=?", (action_iso, m["total_hours"], m["overtime"], m["late_mark"], m["status"], action_iso, rec["id"]))
         return {"message": "Logout Recorded", "metrics": m}, 200
@@ -422,6 +477,9 @@ def rebuild_schema_if_needed(conn):
                 overtime REAL,
                 late_mark INTEGER NOT NULL DEFAULT 0,
                 break_taken INTEGER NOT NULL DEFAULT 1,
+                scheduled_shift_start TEXT,
+                scheduled_shift_end TEXT,
+                scheduled_grace_minutes INTEGER,
                 status TEXT NOT NULL DEFAULT 'PRESENT',
                 system_logout INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -433,7 +491,7 @@ def rebuild_schema_if_needed(conn):
         conn.execute(
             """
             INSERT INTO attendance (
-                id,user_id,attendance_date,login_time,login_method,logout_time,total_hours,overtime,late_mark,break_taken,status,system_logout,created_at,updated_at
+                id,user_id,attendance_date,login_time,login_method,logout_time,total_hours,overtime,late_mark,break_taken,scheduled_shift_start,scheduled_shift_end,scheduled_grace_minutes,status,system_logout,created_at,updated_at
             )
             WITH normalized AS (
                 SELECT *,
@@ -449,6 +507,7 @@ def rebuild_schema_if_needed(conn):
                 id,user_id,normalized_date,login_time,NULL,logout_time,total_hours,overtime,
                 COALESCE(late_mark,0),
                 COALESCE(break_taken,1),
+                NULL,NULL,NULL,
                 CASE WHEN status='ABSENT' THEN 'ABSENT' ELSE 'PRESENT' END,
                 COALESCE(system_logout,0),
                 COALESCE(created_at,login_time,?),
@@ -481,6 +540,9 @@ def rebuild_schema_if_needed(conn):
                     overtime REAL,
                     late_mark INTEGER NOT NULL DEFAULT 0,
                     break_taken INTEGER NOT NULL DEFAULT 1,
+                    scheduled_shift_start TEXT,
+                    scheduled_shift_end TEXT,
+                    scheduled_grace_minutes INTEGER,
                     status TEXT NOT NULL DEFAULT 'PRESENT',
                     system_logout INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
@@ -492,7 +554,7 @@ def rebuild_schema_if_needed(conn):
             conn.execute(
                 """
                 INSERT INTO attendance (
-                    id,user_id,attendance_date,login_time,login_method,logout_time,total_hours,overtime,late_mark,break_taken,status,system_logout,created_at,updated_at
+                    id,user_id,attendance_date,login_time,login_method,logout_time,total_hours,overtime,late_mark,break_taken,scheduled_shift_start,scheduled_shift_end,scheduled_grace_minutes,status,system_logout,created_at,updated_at
                 )
                 WITH normalized AS (
                     SELECT *,
@@ -508,6 +570,7 @@ def rebuild_schema_if_needed(conn):
                     id,user_id,normalized_date,login_time,NULL,logout_time,total_hours,overtime,
                     COALESCE(late_mark,0),
                     COALESCE(break_taken,1),
+                    NULL,NULL,NULL,
                     CASE WHEN status='ABSENT' THEN 'ABSENT' ELSE 'PRESENT' END,
                     COALESCE(system_logout,0),
                     COALESCE(created_at,login_time,?),
@@ -531,7 +594,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS employee_categories(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,required_hours REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS shifts(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,start_time TEXT NOT NULL,end_time TEXT NOT NULL,grace_minutes INTEGER NOT NULL DEFAULT 15);
             CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,name TEXT,role TEXT NOT NULL DEFAULT 'EMPLOYEE',employee_code TEXT,pin_hash TEXT,category_id INTEGER,shift_id INTEGER,category_hours INTEGER,active INTEGER NOT NULL DEFAULT 1,created_at TEXT);
-            CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,attendance_date TEXT NOT NULL,login_time TEXT,login_method TEXT,logout_time TEXT,total_hours REAL,overtime REAL,late_mark INTEGER NOT NULL DEFAULT 0,break_taken INTEGER NOT NULL DEFAULT 1,status TEXT NOT NULL DEFAULT 'PRESENT',system_logout INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT,UNIQUE(user_id,attendance_date));
+            CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,attendance_date TEXT NOT NULL,login_time TEXT,login_method TEXT,logout_time TEXT,total_hours REAL,overtime REAL,late_mark INTEGER NOT NULL DEFAULT 0,break_taken INTEGER NOT NULL DEFAULT 1,scheduled_shift_start TEXT,scheduled_shift_end TEXT,scheduled_grace_minutes INTEGER,status TEXT NOT NULL DEFAULT 'PRESENT',system_logout INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT,UNIQUE(user_id,attendance_date));
             CREATE TABLE IF NOT EXISTS qr_sessions(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,purpose TEXT NOT NULL,expires_at INTEGER NOT NULL,used INTEGER NOT NULL DEFAULT 0,otp_hash TEXT,otp_failed_attempts INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id,attendance_date);
             CREATE INDEX IF NOT EXISTS idx_attendance_status_date ON attendance(status,attendance_date);
@@ -551,6 +614,9 @@ def init_db():
         ensure_col(conn, "attendance", "login_method", "TEXT")
         ensure_col(conn, "attendance", "late_mark", "INTEGER NOT NULL DEFAULT 0")
         ensure_col(conn, "attendance", "break_taken", "INTEGER NOT NULL DEFAULT 1")
+        ensure_col(conn, "attendance", "scheduled_shift_start", "TEXT")
+        ensure_col(conn, "attendance", "scheduled_shift_end", "TEXT")
+        ensure_col(conn, "attendance", "scheduled_grace_minutes", "INTEGER")
         ensure_col(conn, "attendance", "status", "TEXT NOT NULL DEFAULT 'PRESENT'")
         ensure_col(conn, "attendance", "system_logout", "INTEGER NOT NULL DEFAULT 0")
         ensure_col(conn, "attendance", "created_at", "TEXT")
@@ -574,6 +640,30 @@ def init_db():
                 conn.execute("UPDATE users SET employee_code=? WHERE id=?", (f"{prefix}{int(u['id']):03d}", u["id"]))
         conn.execute("UPDATE attendance SET attendance_date=COALESCE(attendance_date,substr(login_time,1,10),substr(created_at,1,10),?) WHERE attendance_date IS NULL", (now_ist().date().isoformat(),))
         conn.execute("UPDATE attendance SET created_at=COALESCE(created_at,login_time,?),updated_at=COALESCE(updated_at,logout_time,login_time,?) WHERE created_at IS NULL OR updated_at IS NULL", (now_iso(), now_iso()))
+        conn.execute(
+            """
+            UPDATE attendance
+            SET scheduled_shift_start=COALESCE(scheduled_shift_start, (
+                    SELECT COALESCE(s.start_time,'09:00')
+                    FROM users u
+                    LEFT JOIN shifts s ON s.id=u.shift_id
+                    WHERE u.id=attendance.user_id
+                )),
+                scheduled_shift_end=COALESCE(scheduled_shift_end, (
+                    SELECT COALESCE(s.end_time,'18:00')
+                    FROM users u
+                    LEFT JOIN shifts s ON s.id=u.shift_id
+                    WHERE u.id=attendance.user_id
+                )),
+                scheduled_grace_minutes=COALESCE(scheduled_grace_minutes, (
+                    SELECT COALESCE(s.grace_minutes,15)
+                    FROM users u
+                    LEFT JOIN shifts s ON s.id=u.shift_id
+                    WHERE u.id=attendance.user_id
+                ))
+            WHERE scheduled_shift_start IS NULL OR scheduled_shift_end IS NULL OR scheduled_grace_minutes IS NULL
+            """
+        )
         conn.execute("UPDATE qr_sessions SET created_at=COALESCE(created_at,?) WHERE created_at IS NULL", (now_iso(),))
         conn.execute("UPDATE qr_sessions SET otp_failed_attempts=COALESCE(otp_failed_attempts,0) WHERE otp_failed_attempts IS NULL")
 
@@ -889,7 +979,7 @@ def midnight_close():
                 absent += 1
                 continue
             if row["login_time"] and not row["logout_time"]:
-                p = user_profile(conn, uid)
+                p = profile_for_attendance(conn, uid, row)
                 st = datetime.combine(target, time.fromisoformat(p["shift_start"]), tzinfo=IST)
                 et = datetime.combine(target, time.fromisoformat(p["shift_end"]), tzinfo=IST)
                 if et <= st:
@@ -1212,6 +1302,15 @@ def admin_attendance_edit():
             user_params.append(user["id"])
             conn.execute(f"UPDATE users SET {', '.join(user_fields)} WHERE id=?", tuple(user_params))
 
+        current_attendance = conn.execute("SELECT * FROM attendance WHERE id=?", (row["id"],)).fetchone()
+        if has_shift or (current_attendance and (not current_attendance["scheduled_shift_start"] or not current_attendance["scheduled_shift_end"] or current_attendance["scheduled_grace_minutes"] is None)):
+            schedule_profile = profile_for_attendance(conn, int(user["id"]))
+            schedule = snapshot_schedule_fields(schedule_profile)
+            conn.execute(
+                "UPDATE attendance SET scheduled_shift_start=?,scheduled_shift_end=?,scheduled_grace_minutes=?,updated_at=? WHERE id=?",
+                (schedule["scheduled_shift_start"], schedule["scheduled_shift_end"], schedule["scheduled_grace_minutes"], now_iso(), row["id"]),
+            )
+
         latest = conn.execute("SELECT * FROM attendance WHERE id=?", (row["id"],)).fetchone()
         if latest["login_time"] and latest["logout_time"]:
             recalc_attendance(conn, int(row["id"]))
@@ -1526,9 +1625,7 @@ def recalc_attendance(conn, attendance_id):
     a = conn.execute("SELECT * FROM attendance WHERE id=?", (attendance_id,)).fetchone()
     if not a or not a["login_time"] or not a["logout_time"]:
         return
-    p = user_profile(conn, int(a["user_id"]))
-    if not p:
-        return
+    p = profile_for_attendance(conn, int(a["user_id"]), a)
     m = calc_metrics(a["login_time"], a["logout_time"], p)
     conn.execute("UPDATE attendance SET total_hours=?,overtime=?,late_mark=?,status=?,updated_at=? WHERE id=?", (m["total_hours"], m["overtime"], m["late_mark"], m["status"], now_iso(), attendance_id))
 
