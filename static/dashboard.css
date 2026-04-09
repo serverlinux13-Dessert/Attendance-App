@@ -242,6 +242,13 @@ button,
   border-radius: 8px;
 }
 
+.bulk-users-input {
+  width: 100%;
+  min-height: 170px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
 button {
   background: var(--accent);
   border-color: var(--accent);

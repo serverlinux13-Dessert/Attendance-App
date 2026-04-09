@@ -292,6 +292,33 @@ def to_items(rows):
     return [dict(r) for r in rows]
 
 
+def parse_admin_user_payload(payload):
+    d = payload or {}
+    name = str(d.get("name", "")).strip()
+    role = str(d.get("role", "EMPLOYEE")).strip().upper()
+    code = str(d.get("employee_code", "")).strip()
+    pin = str(d.get("pin", "")).strip()
+    if not name or role not in {"ADMIN", "EMPLOYEE"} or not code or not valid_pin(pin):
+        return None
+    try:
+        category_id = int(d.get("category_id", 1))
+        shift_id = int(d.get("shift_id", 1))
+        active = int(d.get("active", 1))
+    except Exception:
+        return None
+    if active not in {0, 1}:
+        return None
+    return {
+        "name": name,
+        "role": role,
+        "employee_code": code,
+        "pin": pin,
+        "category_id": category_id,
+        "shift_id": shift_id,
+        "active": active,
+    }
+
+
 def user_profile(conn, user_id):
     return conn.execute(
         """
@@ -1087,6 +1114,46 @@ def admin_summary():
     return jsonify(dict(row))
 
 
+@app.get("/api/admin/employee-summary-all")
+@api_guard("ADMIN")
+def admin_employee_summary_all():
+    try:
+        dfrom, dto = resolve_date_range(request.args.get("from"), request.args.get("to"))
+    except Exception as e:
+        return jsonify({"message": str(e)}), 400
+
+    with conn_db() as conn:
+        summary = conn.execute(
+            """
+            SELECT
+            SUM(CASE WHEN status='ABSENT' THEN 1 ELSE 0 END) absent_count,
+            SUM(CASE WHEN login_time IS NOT NULL THEN 1 ELSE 0 END) total_days_worked,
+            SUM(CASE WHEN late_mark=1 THEN 1 ELSE 0 END) late_count,
+            SUM(COALESCE(total_hours,0)) total_hours,
+            SUM(COALESCE(overtime,0)) overtime_hours
+            FROM attendance WHERE attendance_date BETWEEN ? AND ?
+            """,
+            (dfrom.isoformat(), dto.isoformat()),
+        ).fetchone()
+        rows = conn.execute(
+            """
+            SELECT a.id,a.attendance_date,a.login_time,a.login_method,a.logout_time,a.total_hours,a.overtime,a.late_mark,a.break_taken,a.status,
+                   u.employee_code,
+                   CASE
+                     WHEN a.login_time IS NULL OR a.logout_time IS NULL THEN NULL
+                     ELSE ROUND(MAX(0, COALESCE(c.required_hours,9) - COALESCE(a.total_hours,0)), 4)
+                   END early_logout_hours
+            FROM attendance a
+            JOIN users u ON u.id=a.user_id
+            LEFT JOIN employee_categories c ON c.id=u.category_id
+            WHERE a.attendance_date BETWEEN ? AND ?
+            ORDER BY a.attendance_date DESC,a.id DESC
+            """,
+            (dfrom.isoformat(), dto.isoformat()),
+        ).fetchall()
+    return jsonify({"summary": dict(summary), "attendance": to_items(rows)})
+
+
 @app.get("/api/admin/employee-summary")
 @api_guard("ADMIN")
 def admin_employee_summary():
@@ -1324,6 +1391,126 @@ def admin_attendance_edit():
     return jsonify({"message": "Attendance updated", "item": new})
 
 
+@app.post("/api/admin/attendance/bulk-add")
+@api_guard("ADMIN")
+def admin_attendance_bulk_add():
+    d = request.get_json(silent=True) or {}
+    code = str(d.get("employee_code", "")).strip()
+    entries = d.get("entries")
+    if not code:
+        return jsonify({"message": "employee_code is required"}), 400
+    if not isinstance(entries, list) or not entries:
+        return jsonify({"message": "entries must be a non-empty array"}), 400
+    if len(entries) > 500:
+        return jsonify({"message": "Maximum 500 entries allowed per request"}), 400
+
+    normalized = []
+    for idx, raw in enumerate(entries, start=1):
+        row = raw or {}
+        attendance_date = str(row.get("attendance_date", "")).strip()
+        if not attendance_date:
+            return jsonify({"message": f"attendance_date is required at row {idx}"}), 400
+        try:
+            date.fromisoformat(attendance_date)
+        except Exception:
+            return jsonify({"message": f"Invalid attendance_date at row {idx}"}), 400
+
+        login_time = row.get("login_time")
+        logout_time = row.get("logout_time")
+        if login_time:
+            try:
+                parse_dt(login_time)
+            except Exception:
+                return jsonify({"message": f"Invalid login_time at row {idx}"}), 400
+        if logout_time:
+            try:
+                parse_dt(logout_time)
+            except Exception:
+                return jsonify({"message": f"Invalid logout_time at row {idx}"}), 400
+
+        break_taken = row.get("break_taken", 1)
+        if isinstance(break_taken, bool):
+            break_taken = int(break_taken)
+        elif isinstance(break_taken, (int, float)) and int(break_taken) in {0, 1}:
+            break_taken = int(break_taken)
+        elif isinstance(break_taken, str) and break_taken.strip().lower() in {"0", "1", "true", "false", "yes", "no"}:
+            break_taken = 1 if break_taken.strip().lower() in {"1", "true", "yes"} else 0
+        else:
+            return jsonify({"message": f"break_taken must be true/false at row {idx}"}), 400
+
+        normalized.append(
+            {
+                "attendance_date": attendance_date,
+                "login_time": login_time if login_time else None,
+                "logout_time": logout_time if logout_time else None,
+                "break_taken": break_taken,
+            }
+        )
+
+    processed = []
+    with conn_db() as conn:
+        user = conn.execute("SELECT id FROM users WHERE employee_code=?", (code,)).fetchone()
+        if not user:
+            return jsonify({"message": "User not found"}), 404
+        user_id = int(user["id"])
+        try:
+            for item in normalized:
+                existing = conn.execute(
+                    "SELECT id FROM attendance WHERE user_id=? AND attendance_date=?",
+                    (user_id, item["attendance_date"]),
+                ).fetchone()
+                if existing:
+                    conn.execute(
+                        """
+                        UPDATE attendance
+                        SET login_time=?,logout_time=?,login_method='ADMIN_MANUAL',break_taken=?,status='PRESENT',updated_at=?,system_logout=0
+                        WHERE id=?
+                        """,
+                        (
+                            item["login_time"],
+                            item["logout_time"],
+                            item["break_taken"],
+                            now_iso(),
+                            int(existing["id"]),
+                        ),
+                    )
+                    attendance_id = int(existing["id"])
+                else:
+                    cur = conn.execute(
+                        """
+                        INSERT INTO attendance
+                        (user_id,attendance_date,login_time,login_method,logout_time,total_hours,overtime,late_mark,break_taken,status,system_logout,created_at,updated_at)
+                        VALUES (?,?,?,?,?,NULL,NULL,0,?,'PRESENT',0,?,?)
+                        """,
+                        (
+                            user_id,
+                            item["attendance_date"],
+                            item["login_time"],
+                            "ADMIN_MANUAL",
+                            item["logout_time"],
+                            item["break_taken"],
+                            now_iso(),
+                            now_iso(),
+                        ),
+                    )
+                    attendance_id = int(cur.lastrowid)
+
+                latest = conn.execute("SELECT id,login_time,logout_time FROM attendance WHERE id=?", (attendance_id,)).fetchone()
+                if latest["login_time"] and latest["logout_time"]:
+                    recalc_attendance(conn, attendance_id)
+                else:
+                    conn.execute(
+                        "UPDATE attendance SET total_hours=NULL,overtime=NULL,late_mark=0,updated_at=? WHERE id=?",
+                        (now_iso(), attendance_id),
+                    )
+                processed.append({"attendance_id": attendance_id, "attendance_date": item["attendance_date"]})
+            conn.commit()
+        except sqlite3.IntegrityError as e:
+            conn.rollback()
+            return jsonify({"message": str(e)}), 400
+    return jsonify({"message": "Bulk attendance entries saved", "employee_code": code, "count": len(processed), "items": processed})
+
+
 @app.get("/api/employee/my-attendance")
 @api_guard("EMPLOYEE")
 def my_attendance():
@@ -1432,23 +1619,78 @@ def users_list():
 @app.post("/api/admin/users")
 @api_guard("ADMIN")
 def users_create():
-    d = request.get_json(silent=True) or {}
-    name = str(d.get("name", "")).strip()
-    role = str(d.get("role", "EMPLOYEE")).strip().upper()
-    code = str(d.get("employee_code", "")).strip()
-    pin = str(d.get("pin", "")).strip()
-    if not name or role not in {"ADMIN", "EMPLOYEE"} or not code or not valid_pin(pin):
+    parsed = parse_admin_user_payload(request.get_json(silent=True))
+    if not parsed:
         return jsonify({"message": "Invalid user payload"}), 400
-    cid = int(d.get("category_id", 1))
-    sid = int(d.get("shift_id", 1))
-    active = int(d.get("active", 1))
     with conn_db() as conn:
         try:
-            cur = conn.execute("INSERT INTO users (name,role,employee_code,pin_hash,pin_plain,category_id,shift_id,category_hours,active,created_at) VALUES (?,?,?,?,?,?,?,9,?,?)", (name, role, code, generate_password_hash(pin), pin, cid, sid, active, now_iso()))
+            cur = conn.execute(
+                "INSERT INTO users (name,role,employee_code,pin_hash,pin_plain,category_id,shift_id,category_hours,active,created_at) VALUES (?,?,?,?,?,?,?,9,?,?)",
+                (
+                    parsed["name"],
+                    parsed["role"],
+                    parsed["employee_code"],
+                    generate_password_hash(parsed["pin"]),
+                    parsed["pin"],
+                    parsed["category_id"],
+                    parsed["shift_id"],
+                    parsed["active"],
+                    now_iso(),
+                ),
+            )
             conn.commit()
         except sqlite3.IntegrityError as e:
             return jsonify({"message": str(e)}), 400
     return jsonify({"message": "User created", "id": int(cur.lastrowid)})
+
+
+@app.post("/api/admin/users/bulk")
+@api_guard("ADMIN")
+def users_create_bulk():
+    d = request.get_json(silent=True) or {}
+    entries = d.get("users")
+    if not isinstance(entries, list) or not entries:
+        return jsonify({"message": "users must be a non-empty array"}), 400
+    if len(entries) > 500:
+        return jsonify({"message": "Maximum 500 users allowed per bulk request"}), 400
+
+    parsed_entries = []
+    seen_codes = set()
+    for idx, raw in enumerate(entries, start=1):
+        parsed = parse_admin_user_payload(raw)
+        if not parsed:
+            return jsonify({"message": f"Invalid user payload at row {idx}"}), 400
+        code_key = parsed["employee_code"].upper()
+        if code_key in seen_codes:
+            return jsonify({"message": f"Duplicate employee_code in request at row {idx}: {parsed['employee_code']}"}), 400
+        seen_codes.add(code_key)
+        parsed_entries.append(parsed)
+
+    created = []
+    created_at = now_iso()
+    with conn_db() as conn:
+        try:
+            for entry in parsed_entries:
+                cur = conn.execute(
+                    "INSERT INTO users (name,role,employee_code,pin_hash,pin_plain,category_id,shift_id,category_hours,active,created_at) VALUES (?,?,?,?,?,?,?,9,?,?)",
+                    (
+                        entry["name"],
+                        entry["role"],
+                        entry["employee_code"],
+                        generate_password_hash(entry["pin"]),
+                        entry["pin"],
+                        entry["category_id"],
+                        entry["shift_id"],
+                        entry["active"],
+                        created_at,
+                    ),
+                )
+                created.append({"id": int(cur.lastrowid), "employee_code": entry["employee_code"]})
+            conn.commit()
+        except sqlite3.IntegrityError as e:
+            conn.rollback()
+            return jsonify({"message": str(e)}), 400
+    return jsonify({"message": "Bulk users created", "created_count": len(created), "created": created})
 
 
 @app.put("/api/admin/users/<int:user_id>")
