@@ -89,18 +89,18 @@
 
     <section class="card dashboard-card span-6" data-widget-id="admin-bulk-attendance-entry">
       <div class="card-header">
-        <h3>Admin Bulk Login/Logout Entry (Single Employee)</h3>
+        <h3>Admin Bulk Login/Logout Entry</h3>
       </div>
       <div class="dashboard-card-body">
         <form id="adminBulkAttendanceForm" class="stack">
           <div class="row wrap">
-            <input id="bulkAttendanceEmpCode" placeholder="Employee Code (e.g. EMP001)" />
-            <button id="bulkAttendanceTemplateBtn" type="button">Insert Example Rows</button>
+            <button id="bulkAttendanceAddRowBtn" type="button">Add Slot</button>
+            <button id="bulkAttendanceClearBtn" type="button">Clear Slots</button>
             <button type="submit">Save Multiple Entries</button>
           </div>
-          <textarea id="bulkAttendanceInput" class="bulk-users-input" placeholder="Format per line: AttendanceDate,LoginDateTime,LogoutDateTime,BreakTaken(0/1)&#10;Example: 2026-04-01,2026-04-01T09:00,2026-04-01T18:05,1"></textarea>
+          <div id="bulkAttendanceSlots" class="stack"></div>
         </form>
-        <p class="muted">Admin-only manual entries. One employee can receive multiple login/logout rows in one submission (typically one line per date).</p>
+        <p class="muted">Admin-only manual entries. Add one slot per login/logout entry with employee code and date/time details.</p>
         <div id="bulkAttendanceResult" class="muted"></div>
       </div>
     </section>
@@ -125,29 +125,6 @@
             <tbody></tbody>
           </table>
         </div>
-      </div>
-    </section>
-
-    <section class="card dashboard-card span-12" data-widget-id="admin-bulk-user-create">
-      <div class="card-header">
-        <h3>Bulk Employee Onboarding (No QR/OTP)</h3>
-      </div>
-      <div class="dashboard-card-body">
-        <form id="bulkCreateUsersForm" class="stack">
-          <div class="row wrap">
-            <select id="bulkRole">
-              <option value="EMPLOYEE">EMPLOYEE</option>
-              <option value="ADMIN">ADMIN</option>
-            </select>
-            <select id="bulkCategory"></select>
-            <select id="bulkShift"></select>
-            <button id="bulkTemplateBtn" type="button">Insert Example Rows</button>
-            <button type="submit">Create Multiple Users</button>
-          </div>
-          <textarea id="bulkUsersInput" class="bulk-users-input" placeholder="Format per line: Name,EmployeeCode,PIN&#10;Example: John Doe,EMP101,1234"></textarea>
-        </form>
-        <p class="muted">Creates users directly from admin dashboard without QR/OTP flow. One user per line: Name, EmployeeCode, 4-digit PIN.</p>
-        <div id="bulkCreateResult" class="muted"></div>
       </div>
     </section>
 

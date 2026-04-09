@@ -376,15 +376,15 @@ async function loadAdmin() {
   qs("reloadTodayAttendance").onclick = loadTodayAttendance;
 
   qs("createUserForm").onsubmit = createUser;
-  qs("bulkCreateUsersForm").onsubmit = createUsersInBulk;
-  qs("bulkTemplateBtn").onclick = insertBulkUsersTemplate;
   qs("createCategoryForm").onsubmit = createCategory;
   qs("createShiftForm").onsubmit = createShift;
   qs("assignShiftForm").onsubmit = assignShiftToEmployee;
   qs("adminEditAttendanceForm").onsubmit = submitAdminAttendanceEdit;
   qs("loadAttendanceEditBtn").onclick = loadCurrentAttendanceEdit;
   qs("adminBulkAttendanceForm").onsubmit = submitAdminBulkAttendance;
-  qs("bulkAttendanceTemplateBtn").onclick = insertBulkAttendanceTemplate;
+  qs("bulkAttendanceAddRowBtn").onclick = () => addBulkAttendanceSlot();
+  qs("bulkAttendanceClearBtn").onclick = resetBulkAttendanceSlots;
+  resetBulkAttendanceSlots();
 
   await Promise.all([fetchCategories(), fetchShifts()]);
   await Promise.all([fetchUsers(), loadTodayAttendance()]);
@@ -528,13 +528,6 @@ async function createUser(e) {
   await fetchUsers();
 }
 
-function setBulkCreateMessage(message, isError = false) {
-  const el = qs("bulkCreateResult");
-  if (!el) return;
-  el.textContent = message || "";
-  el.style.color = isError ? "#b91c1c" : "";
-}
-
 function setBulkAttendanceMessage(message, isError = false) {
   const el = qs("bulkAttendanceResult");
   if (!el) return;
@@ -542,119 +535,106 @@ function setBulkAttendanceMessage(message, isError = false) {
   el.style.color = isError ? "#b91c1c" : "";
 }
 
-function insertBulkAttendanceTemplate() {
-  const textarea = qs("bulkAttendanceInput");
-  if (!textarea) return;
-  textarea.value = "2026-04-01,2026-04-01T09:00,2026-04-01T18:00,1\n2026-04-02,2026-04-02T09:10,2026-04-02T18:05,0";
+function createBulkAttendanceSlot(data = {}) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "bulk-attendance-slot";
+  wrapper.innerHTML = `
+    <div class="row wrap">
+      <input data-k="employee_code" placeholder="Employee Code (e.g. EMP001)" value="${data.employee_code || ""}" />
+      <input data-k="attendance_date" type="date" title="Attendance date" value="${data.attendance_date || ""}" />
+      <input data-k="login_time" type="datetime-local" title="Login date and time" value="${data.login_time || ""}" />
+      <input data-k="logout_time" type="datetime-local" title="Logout date and time" value="${data.logout_time || ""}" />
+      <select data-k="break_taken" title="Break taken">
+        <option value="1" ${(data.break_taken == null || Number(data.break_taken) === 1) ? "selected" : ""}>Break Taken = Yes</option>
+        <option value="0" ${Number(data.break_taken) === 0 ? "selected" : ""}>Break Taken = No</option>
+      </select>
+      <button type="button" data-role="remove-slot">Remove</button>
+    </div>
+  `;
+  wrapper.querySelector('[data-role="remove-slot"]').onclick = () => {
+    const container = qs("bulkAttendanceSlots");
+    wrapper.remove();
+    if (container && !container.children.length) addBulkAttendanceSlot();
+  };
+  return wrapper;
 }
 
-function parseBulkAttendanceInput(raw) {
-  const lines = String(raw || "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith("#"));
-  return lines.map((line, idx) => {
-    const parts = line.split(",").map((x) => x.trim());
-    if (parts.length < 3 || parts.length > 4) {
-      throw new Error(`Invalid format at line ${idx + 1}. Use: Date,LoginDateTime,LogoutDateTime,Break(0/1)`);
-    }
-    const attendance_date = parts[0];
-    const login_time = parts[1] || null;
-    const logout_time = parts[2] || null;
-    const break_taken = parts[3] === undefined || parts[3] === "" ? 1 : Number(parts[3]);
-    if (!attendance_date) throw new Error(`attendance_date missing at line ${idx + 1}.`);
-    if (Number.isNaN(break_taken) || ![0, 1].includes(break_taken)) {
-      throw new Error(`break_taken must be 0 or 1 at line ${idx + 1}.`);
-    }
-    return { attendance_date, login_time, logout_time, break_taken };
+function addBulkAttendanceSlot(data = {}) {
+  const container = qs("bulkAttendanceSlots");
+  if (!container) return;
+  container.appendChild(createBulkAttendanceSlot(data));
+}
+
+function resetBulkAttendanceSlots() {
+  const container = qs("bulkAttendanceSlots");
+  if (!container) return;
+  container.innerHTML = "";
+  addBulkAttendanceSlot({
+    attendance_date: todayIso(),
+    break_taken: 1,
   });
+}
+
+function parseBulkAttendanceSlots() {
+  const container = qs("bulkAttendanceSlots");
+  const rows = Array.from(container ? container.querySelectorAll(".bulk-attendance-slot") : []);
+  const grouped = new Map();
+
+  rows.forEach((slot, idx) => {
+    const line = idx + 1;
+    const employee_code = (slot.querySelector('[data-k="employee_code"]').value || "").trim();
+    const attendance_date = (slot.querySelector('[data-k="attendance_date"]').value || "").trim();
+    const login_time = (slot.querySelector('[data-k="login_time"]').value || "").trim();
+    const logout_time = (slot.querySelector('[data-k="logout_time"]').value || "").trim();
+    const break_taken = Number(slot.querySelector('[data-k="break_taken"]').value);
+    if (!employee_code) throw new Error(`Employee code is required at slot ${line}.`);
+    if (!attendance_date) throw new Error(`Attendance date is required at slot ${line}.`);
+    if (Number.isNaN(break_taken) || ![0, 1].includes(break_taken)) {
+      throw new Error(`Break value must be Yes or No at slot ${line}.`);
+    }
+    if (!grouped.has(employee_code)) grouped.set(employee_code, []);
+    grouped.get(employee_code).push({
+      attendance_date,
+      login_time: login_time || null,
+      logout_time: logout_time || null,
+      break_taken,
+    });
+  });
+
+  return grouped;
 }
 
 async function submitAdminBulkAttendance(e) {
   e.preventDefault();
   try {
     setBulkAttendanceMessage("");
-    const employeeCode = (qs("bulkAttendanceEmpCode").value || "").trim();
-    if (!employeeCode) {
-      alert("Employee code is required.");
+    const groupedEntries = parseBulkAttendanceSlots();
+    if (!groupedEntries.size) {
+      alert("Please enter at least one attendance slot.");
       return;
     }
-    const entries = parseBulkAttendanceInput(qs("bulkAttendanceInput").value);
-    if (!entries.length) {
-      alert("Please enter at least one attendance row.");
-      return;
+
+    let totalSaved = 0;
+    const savedEmployeeCodes = [];
+    for (const [employeeCode, entries] of groupedEntries.entries()) {
+      const result = await api("/api/admin/attendance/bulk-add", {
+        method: "POST",
+        body: JSON.stringify({ employee_code: employeeCode, entries }),
+      });
+      totalSaved += Number(result.count || entries.length);
+      savedEmployeeCodes.push(employeeCode);
     }
-    const result = await api("/api/admin/attendance/bulk-add", {
-      method: "POST",
-      body: JSON.stringify({ employee_code: employeeCode, entries }),
-    });
-    setBulkAttendanceMessage(`Saved ${result.count || entries.length} attendance entries for ${employeeCode}.`);
-    qs("bulkAttendanceInput").value = "";
+
+    setBulkAttendanceMessage(`Saved ${totalSaved} attendance entries for ${savedEmployeeCodes.length} employee(s).`);
+    resetBulkAttendanceSlots();
     await Promise.all([loadTodayAttendance(), fetchUsers()]);
-    if (getMergedEmployeeCode().toUpperCase() === employeeCode.toUpperCase()) {
+    const selectedCode = getMergedEmployeeCode().toUpperCase();
+    if (selectedCode !== "ALL" && savedEmployeeCodes.some((code) => selectedCode === code.toUpperCase())) {
       await loadMergedEmployeeView();
     }
   } catch (err) {
     setBulkAttendanceMessage(err.message || "Unable to save bulk attendance.", true);
     alert(err.message || "Unable to save bulk attendance.");
-  }
-}
-
-function parseBulkUsersInput(raw) {
-  const lines = String(raw || "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith("#"));
-  return lines.map((line, idx) => {
-    const parts = line.split(",").map((x) => x.trim());
-    if (parts.length !== 3) {
-      throw new Error(`Invalid format at line ${idx + 1}. Use: Name,EmployeeCode,PIN`);
-    }
-    const [name, employee_code, pin] = parts;
-    if (!name || !employee_code || !pin) {
-      throw new Error(`Missing value at line ${idx + 1}.`);
-    }
-    if (!/^\d{4}$/.test(pin)) {
-      throw new Error(`PIN must be 4 digits at line ${idx + 1}.`);
-    }
-    return { name, employee_code, pin };
-  });
-}
-
-function insertBulkUsersTemplate() {
-  const textarea = qs("bulkUsersInput");
-  if (!textarea) return;
-  textarea.value = "John Doe,EMP101,1234\nJane Smith,EMP102,2345\nRavi Kumar,EMP103,3456";
-}
-
-async function createUsersInBulk(e) {
-  e.preventDefault();
-  try {
-    setBulkCreateMessage("");
-    const textarea = qs("bulkUsersInput");
-    const role = qs("bulkRole").value;
-    const categoryId = Number(qs("bulkCategory").value);
-    const shiftId = Number(qs("bulkShift").value);
-    const users = parseBulkUsersInput(textarea.value).map((u) => ({
-      ...u,
-      role,
-      category_id: categoryId,
-      shift_id: shiftId,
-    }));
-    if (!users.length) {
-      alert("Please add at least one user row.");
-      return;
-    }
-    const result = await api("/api/admin/users/bulk", {
-      method: "POST",
-      body: JSON.stringify({ users }),
-    });
-    setBulkCreateMessage(`Created ${result.created_count || users.length} users successfully.`);
-    textarea.value = "";
-    await fetchUsers();
-  } catch (err) {
-    setBulkCreateMessage(err.message || "Unable to create users in bulk.", true);
-    alert(err.message || "Unable to create users in bulk.");
   }
 }
 
@@ -709,7 +689,6 @@ async function fetchCategories() {
   });
 
   fillSelect(qs("uCategory"), adminState.categories, "id", "name");
-  fillSelect(qs("bulkCategory"), adminState.categories, "id", "name");
   fillSelect(qs("editCategoryId"), adminState.categories, "id", "name", "Category (No Change)");
 }
 
@@ -778,7 +757,6 @@ async function fetchShifts() {
   });
 
   fillSelect(qs("uShift"), adminState.shifts, "id", "name");
-  fillSelect(qs("bulkShift"), adminState.shifts, "id", "name");
   fillSelect(qs("assignShiftId"), adminState.shifts, "id", "name");
   fillSelect(qs("editShiftId"), adminState.shifts, "id", "name", "Shift (No Change)");
 }
