@@ -249,6 +249,18 @@ button,
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
+.bulk-attendance-slot {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.bulk-attendance-slot .row > input,
+.bulk-attendance-slot .row > select {
+  flex: 1 1 190px;
+}
+
 button {
   background: var(--accent);
   border-color: var(--accent);
