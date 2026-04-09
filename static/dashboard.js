@@ -335,13 +335,30 @@ function getMergedEmployeeCode() {
   return (qs("mergedEmployeeCode").value || "").trim();
 }
 
+function populateMergedEmployeeOptions() {
+  const select = qs("mergedEmployeeCode");
+  if (!select) return;
+  const current = (select.value || "ALL").trim();
+  let html = `<option value="ALL">All Employees</option>`;
+  (adminState.users || []).forEach((u) => {
+    const code = String(u.employee_code || "").trim();
+    if (!code) return;
+    html += `<option value="${code}">${code} - ${u.name || ""}</option>`;
+  });
+  select.innerHTML = html;
+  const exists = Array.from(select.options).some((opt) => opt.value === current);
+  select.value = exists ? current : "ALL";
+}
+
 function setMergedExportLink() {
   const code = getMergedEmployeeCode();
   const link = qs("mergedExportLink");
-  if (!code) {
+  if (!code || code.toUpperCase() === "ALL") {
     link.removeAttribute("href");
+    link.title = "XLSX export is available for individual employees only.";
     return;
   }
+  link.title = "";
   link.href = `/api/admin/employee-summary.xlsx?employee_code=${encodeURIComponent(code)}&${mergedRangeQuery()}`;
 }
 
@@ -359,11 +376,15 @@ async function loadAdmin() {
   qs("reloadTodayAttendance").onclick = loadTodayAttendance;
 
   qs("createUserForm").onsubmit = createUser;
+  qs("bulkCreateUsersForm").onsubmit = createUsersInBulk;
+  qs("bulkTemplateBtn").onclick = insertBulkUsersTemplate;
   qs("createCategoryForm").onsubmit = createCategory;
   qs("createShiftForm").onsubmit = createShift;
   qs("assignShiftForm").onsubmit = assignShiftToEmployee;
   qs("adminEditAttendanceForm").onsubmit = submitAdminAttendanceEdit;
   qs("loadAttendanceEditBtn").onclick = loadCurrentAttendanceEdit;
+  qs("adminBulkAttendanceForm").onsubmit = submitAdminBulkAttendance;
+  qs("bulkAttendanceTemplateBtn").onclick = insertBulkAttendanceTemplate;
 
   await Promise.all([fetchCategories(), fetchShifts()]);
   await Promise.all([fetchUsers(), loadTodayAttendance()]);
@@ -372,12 +393,11 @@ async function loadAdmin() {
 
 async function loadMergedEmployeeView() {
   const code = getMergedEmployeeCode();
-  if (!code) {
-    alert("Enter employee code");
-    return;
-  }
   try {
-    const d = await api(`/api/admin/employee-summary?employee_code=${encodeURIComponent(code)}&${mergedRangeQuery()}`);
+    const allSelected = !code || code.toUpperCase() === "ALL";
+    const d = allSelected
+      ? await api(`/api/admin/employee-summary-all?${mergedRangeQuery()}`)
+      : await api(`/api/admin/employee-summary?employee_code=${encodeURIComponent(code)}&${mergedRangeQuery()}`);
 
     const summary = d.summary || {};
     renderOrderedKpis(qs("mergedSummary"), {
@@ -392,7 +412,7 @@ async function loadMergedEmployeeView() {
     tb.innerHTML = "";
     (d.attendance || []).forEach((i) => {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${i.attendance_date || ""}</td><td>${formatDashboardDateTime(i.login_time)}</td><td>${formatDashboardDateTime(i.logout_time)}</td><td>${i.login_method || "-"}</td><td>${kpiValue(i.total_hours)}</td><td>${kpiValue(i.overtime)}</td><td>${formatHoursToHHMM(i.early_logout_hours)}</td><td>${formatYesNo(i.late_mark)}</td><td>${formatYesNo(i.break_taken)}</td>`;
+      tr.innerHTML = `<td>${i.employee_code || (allSelected ? "" : code)}</td><td>${i.attendance_date || ""}</td><td>${formatDashboardDateTime(i.login_time)}</td><td>${formatDashboardDateTime(i.logout_time)}</td><td>${i.login_method || "-"}</td><td>${kpiValue(i.total_hours)}</td><td>${kpiValue(i.overtime)}</td><td>${formatHoursToHHMM(i.early_logout_hours)}</td><td>${formatYesNo(i.late_mark)}</td><td>${formatYesNo(i.break_taken)}</td>`;
       tb.appendChild(tr);
     });
     setMergedExportLink();
@@ -488,6 +508,7 @@ async function fetchUsers() {
 
   fillSelect(qs("uCategory"), adminState.categories, "id", "name");
   fillSelect(qs("uShift"), adminState.shifts, "id", "name");
+  populateMergedEmployeeOptions();
 }
 
 async function createUser(e) {
@@ -505,6 +526,136 @@ async function createUser(e) {
   });
   e.target.reset();
   await fetchUsers();
+}
+
+function setBulkCreateMessage(message, isError = false) {
+  const el = qs("bulkCreateResult");
+  if (!el) return;
+  el.textContent = message || "";
+  el.style.color = isError ? "#b91c1c" : "";
+}
+
+function setBulkAttendanceMessage(message, isError = false) {
+  const el = qs("bulkAttendanceResult");
+  if (!el) return;
+  el.textContent = message || "";
+  el.style.color = isError ? "#b91c1c" : "";
+}
+
+function insertBulkAttendanceTemplate() {
+  const textarea = qs("bulkAttendanceInput");
+  if (!textarea) return;
+  textarea.value = "2026-04-01,2026-04-01T09:00,2026-04-01T18:00,1\n2026-04-02,2026-04-02T09:10,2026-04-02T18:05,0";
+}
+
+function parseBulkAttendanceInput(raw) {
+  const lines = String(raw || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+  return lines.map((line, idx) => {
+    const parts = line.split(",").map((x) => x.trim());
+    if (parts.length < 3 || parts.length > 4) {
+      throw new Error(`Invalid format at line ${idx + 1}. Use: Date,LoginDateTime,LogoutDateTime,Break(0/1)`);
+    }
+    const attendance_date = parts[0];
+    const login_time = parts[1] || null;
+    const logout_time = parts[2] || null;
+    const break_taken = parts[3] === undefined || parts[3] === "" ? 1 : Number(parts[3]);
+    if (!attendance_date) throw new Error(`attendance_date missing at line ${idx + 1}.`);
+    if (Number.isNaN(break_taken) || ![0, 1].includes(break_taken)) {
+      throw new Error(`break_taken must be 0 or 1 at line ${idx + 1}.`);
+    }
+    return { attendance_date, login_time, logout_time, break_taken };
+  });
+}
+
+async function submitAdminBulkAttendance(e) {
+  e.preventDefault();
+  try {
+    setBulkAttendanceMessage("");
+    const employeeCode = (qs("bulkAttendanceEmpCode").value || "").trim();
+    if (!employeeCode) {
+      alert("Employee code is required.");
+      return;
+    }
+    const entries = parseBulkAttendanceInput(qs("bulkAttendanceInput").value);
+    if (!entries.length) {
+      alert("Please enter at least one attendance row.");
+      return;
+    }
+    const result = await api("/api/admin/attendance/bulk-add", {
+      method: "POST",
+      body: JSON.stringify({ employee_code: employeeCode, entries }),
+    });
+    setBulkAttendanceMessage(`Saved ${result.count || entries.length} attendance entries for ${employeeCode}.`);
+    qs("bulkAttendanceInput").value = "";
+    await Promise.all([loadTodayAttendance(), fetchUsers()]);
+    if (getMergedEmployeeCode().toUpperCase() === employeeCode.toUpperCase()) {
+      await loadMergedEmployeeView();
+    }
+  } catch (err) {
+    setBulkAttendanceMessage(err.message || "Unable to save bulk attendance.", true);
+    alert(err.message || "Unable to save bulk attendance.");
+  }
+}
+
+function parseBulkUsersInput(raw) {
+  const lines = String(raw || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+  return lines.map((line, idx) => {
+    const parts = line.split(",").map((x) => x.trim());
+    if (parts.length !== 3) {
+      throw new Error(`Invalid format at line ${idx + 1}. Use: Name,EmployeeCode,PIN`);
+    }
+    const [name, employee_code, pin] = parts;
+    if (!name || !employee_code || !pin) {
+      throw new Error(`Missing value at line ${idx + 1}.`);
+    }
+    if (!/^\d{4}$/.test(pin)) {
+      throw new Error(`PIN must be 4 digits at line ${idx + 1}.`);
+    }
+    return { name, employee_code, pin };
+  });
+}
+
+function insertBulkUsersTemplate() {
+  const textarea = qs("bulkUsersInput");
+  if (!textarea) return;
+  textarea.value = "John Doe,EMP101,1234\nJane Smith,EMP102,2345\nRavi Kumar,EMP103,3456";
+}
+
+async function createUsersInBulk(e) {
+  e.preventDefault();
+  try {
+    setBulkCreateMessage("");
+    const textarea = qs("bulkUsersInput");
+    const role = qs("bulkRole").value;
+    const categoryId = Number(qs("bulkCategory").value);
+    const shiftId = Number(qs("bulkShift").value);
+    const users = parseBulkUsersInput(textarea.value).map((u) => ({
+      ...u,
+      role,
+      category_id: categoryId,
+      shift_id: shiftId,
+    }));
+    if (!users.length) {
+      alert("Please add at least one user row.");
+      return;
+    }
+    const result = await api("/api/admin/users/bulk", {
+      method: "POST",
+      body: JSON.stringify({ users }),
+    });
+    setBulkCreateMessage(`Created ${result.created_count || users.length} users successfully.`);
+    textarea.value = "";
+    await fetchUsers();
+  } catch (err) {
+    setBulkCreateMessage(err.message || "Unable to create users in bulk.", true);
+    alert(err.message || "Unable to create users in bulk.");
+  }
 }
 
 async function fetchCategories() {
@@ -558,6 +709,7 @@ async function fetchCategories() {
   });
 
   fillSelect(qs("uCategory"), adminState.categories, "id", "name");
+  fillSelect(qs("bulkCategory"), adminState.categories, "id", "name");
   fillSelect(qs("editCategoryId"), adminState.categories, "id", "name", "Category (No Change)");
 }
 
@@ -626,6 +778,7 @@ async function fetchShifts() {
   });
 
   fillSelect(qs("uShift"), adminState.shifts, "id", "name");
+  fillSelect(qs("bulkShift"), adminState.shifts, "id", "name");
   fillSelect(qs("assignShiftId"), adminState.shifts, "id", "name");
   fillSelect(qs("editShiftId"), adminState.shifts, "id", "name", "Shift (No Change)");
 }
