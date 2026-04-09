@@ -345,7 +345,12 @@ def calc_metrics(login_iso, logout_iso, profile):
     logout = parse_dt(logout_iso).astimezone(IST)
     total_hours = max(0, (logout - login).total_seconds() / 3600)
     st = datetime.combine(login.date(), time.fromisoformat(profile["shift_start"]), tzinfo=IST)
-    assigned_shift_hours = max(0, float(profile["required_hours"] or 0))
+    required_hours_value = 9.0
+    if isinstance(profile, dict):
+        required_hours_value = float(profile.get("required_hours", 9) or 0) or 9.0
+    elif hasattr(profile, "keys") and "required_hours" in profile.keys():
+        required_hours_value = float(profile["required_hours"] or 0) or 9.0
+    assigned_shift_hours = max(0, required_hours_value)
     ot = max(0, total_hours - assigned_shift_hours)
     late = int(login > st + timedelta(minutes=int(profile["grace_minutes"] or 0)))
     status = "PRESENT"
@@ -366,6 +371,11 @@ def snapshot_schedule_fields(profile):
 
 
 def profile_for_attendance(conn, user_id, attendance_row=None):
+    required_hours = 9.0
+    p = user_profile(conn, user_id)
+    if p:
+        required_hours = float(p["required_hours"] or 0) or 9.0
+
     if attendance_row:
         sst = attendance_row["scheduled_shift_start"] if "scheduled_shift_start" in attendance_row.keys() else None
         set_ = attendance_row["scheduled_shift_end"] if "scheduled_shift_end" in attendance_row.keys() else None
@@ -375,14 +385,15 @@ def profile_for_attendance(conn, user_id, attendance_row=None):
                 "shift_start": sst,
                 "shift_end": set_,
                 "grace_minutes": int(sgm),
+                "required_hours": required_hours,
             }
-    p = user_profile(conn, user_id)
     if not p:
-        return {"shift_start": "09:00", "shift_end": "18:00", "grace_minutes": 15}
+        return {"shift_start": "09:00", "shift_end": "18:00", "grace_minutes": 15, "required_hours": required_hours}
     return {
         "shift_start": p["shift_start"],
         "shift_end": p["shift_end"],
         "grace_minutes": int(p["grace_minutes"] or 0),
+        "required_hours": required_hours,
     }
 
 
