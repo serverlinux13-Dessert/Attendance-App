@@ -318,10 +318,7 @@ def calc_metrics(login_iso, logout_iso, profile):
     logout = parse_dt(logout_iso).astimezone(IST)
     total_hours = max(0, (logout - login).total_seconds() / 3600)
     st = datetime.combine(login.date(), time.fromisoformat(profile["shift_start"]), tzinfo=IST)
-    et = datetime.combine(login.date(), time.fromisoformat(profile["shift_end"]), tzinfo=IST)
-    if et <= st:
-        et += timedelta(days=1)
-    assigned_shift_hours = max(0, (et - st).total_seconds() / 3600)
+    assigned_shift_hours = max(0, float(profile["required_hours"] or 0))
     ot = max(0, total_hours - assigned_shift_hours)
     late = int(login > st + timedelta(minutes=int(profile["grace_minutes"] or 0)))
     status = "PRESENT"
