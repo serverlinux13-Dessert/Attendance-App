@@ -1,7 +1,7 @@
 .venv/
+venv/
 __pycache__/
-*.py[cod]
-.env
+*.pyc
+.git/
 .dist/
-*.db
-database.db
+db_backup/
