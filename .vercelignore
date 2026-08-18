@@ -1,0 +1,10 @@
+.venv/
+.dist/
+db_backup/
+deploy/
+__pycache__/
+.git/
+.codex/
+.agents/
+*.db
+database.db

@@ -155,7 +155,7 @@ This repository includes a `render.yaml` blueprint with the correct settings. Im
 
 ## Deploy on Vercel
 
-Vercel can detect the root `app.py` Flask application automatically. This repository also includes a `vercel.json` that trims the function bundle by excluding local database backups, deploy files, and virtualenv artifacts.
+Vercel can detect the root `app.py` Flask application automatically with zero custom build or routing steps. This repository's `vercel.json` only adjusts the function bundle and timeout; it does not override Flask routing or Vercel's normal `public/**` static-file handling.
 
 Set these environment variables in the Vercel project:
 
@@ -165,6 +165,14 @@ Set these environment variables in the Vercel project:
 - `TURSO_AUTH_TOKEN=<set in Vercel env vars>`
 - `TRUST_PROXY=1`
 - `SESSION_COOKIE_SECURE=1`
+- `LOG_LEVEL=INFO`
+- `ENABLE_ROUTE_DEBUG=1` while diagnosing routes such as `/scanner`, `/scanner.js`, `/health`, or `/api/*`
+
+Operational notes:
+
+- `/health` now reports environment status, Turso connectivity, and public static-file availability.
+- `/routes` returns the registered Flask routes when `ENABLE_ROUTE_DEBUG=1`.
+- `REQUIRE_OFFICE_NETWORK` is optional and defaults to disabled so Vercel deployments are not blocked unexpectedly.
 
 ## URLs
 
