@@ -8,22 +8,20 @@ import json
 import math
 import os
 import secrets
-import sqlite3
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import libsql
 import qrcode
-import requests
 from flask import Flask, jsonify, redirect, render_template, request, send_file, send_from_directory, session, url_for
 from flask_cors import CORS
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "database.db"
 PUBLIC_DIR = BASE_DIR / "public"
 
 try:
@@ -37,6 +35,8 @@ OTP_MAX_ATTEMPTS = 5
 BREAK_CUTOFF_HOUR = 4
 DEFAULT_EMPLOYEE_PIN = "1111"
 DEFAULT_ADMIN_PIN = "1234"
+TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL", "").strip()
+TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip()
 APP_ENV = os.getenv("APP_ENV", os.getenv("FLASK_ENV", "development")).strip().lower()
 IS_PRODUCTION = APP_ENV == "production"
 SECRET_KEY = os.getenv("SECRET_KEY", "").strip()
@@ -44,6 +44,8 @@ if not SECRET_KEY:
     if IS_PRODUCTION:
         raise RuntimeError("SECRET_KEY environment variable is required when APP_ENV=production")
     SECRET_KEY = "dev-change-this-secret"
+if not TURSO_DATABASE_URL or not TURSO_AUTH_TOKEN:
+    raise RuntimeError("TURSO_DATABASE_URL and TURSO_AUTH_TOKEN environment variables are required")
 REQUIRE_OFFICE_NETWORK = os.getenv("REQUIRE_OFFICE_NETWORK", "0") == "1"
 ALLOWED_SUBNET = os.getenv("ALLOWED_SUBNET", "").strip()
 ALLOWED_SUBNETS = os.getenv("ALLOWED_SUBNETS", "").strip()
@@ -97,84 +99,117 @@ if TRUST_PROXY:
 CORS(app, supports_credentials=True)
 
 
+class DBRow(dict):
+    def __init__(self, columns, values):
+        super().__init__(zip(columns, values))
+        self._columns = tuple(columns)
+        self._values = tuple(values)
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._values[key]
+        return super().__getitem__(key)
+
+
+def wrap_db_row(description, row):
+    if row is None:
+        return None
+    if isinstance(row, DBRow):
+        return row
+    if isinstance(row, dict):
+        return DBRow(tuple(row.keys()), tuple(row.values()))
+    if not description:
+        return row
+    columns = [col[0] for col in description]
+    return DBRow(columns, row)
+
+
+class DBCursor:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    @property
+    def description(self):
+        return getattr(self._cursor, "description", None)
+
+    @property
+    def lastrowid(self):
+        return getattr(self._cursor, "lastrowid", None)
+
+    def fetchone(self):
+        return wrap_db_row(self.description, self._cursor.fetchone())
+
+    def fetchall(self):
+        rows = self._cursor.fetchall()
+        if not rows:
+            return []
+        return [wrap_db_row(self.description, row) for row in rows]
+
+    def execute(self, sql, params=()):
+        return DBCursor(self._cursor.execute(sql, params))
+
+    def executemany(self, sql, seq_of_parameters):
+        return DBCursor(self._cursor.executemany(sql, seq_of_parameters))
+
+    def __iter__(self):
+        return iter(self.fetchall())
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+
+class DBConnection:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, params=()):
+        return DBCursor(self._conn.execute(sql, params))
+
+    def executemany(self, sql, seq_of_parameters):
+        return DBCursor(self._conn.executemany(sql, seq_of_parameters))
+
+    def executescript(self, sql_script):
+        cursor = self._conn.executescript(sql_script)
+        return DBCursor(cursor)
+
+    def cursor(self):
+        return DBCursor(self._conn.cursor())
+
+    def commit(self):
+        return self._conn.commit()
+
+    def rollback(self):
+        return self._conn.rollback()
+
+    def close(self):
+        return self._conn.close()
+
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return self._conn.__exit__(exc_type, exc, tb)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
 def conn_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    conn = libsql.connect(database=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
+    return DBConnection(conn)
 
 
-def restore_db_from_github():
-    try:
-        if DB_PATH.exists():
-            return
-
-        repo = os.getenv("GITHUB_REPO", "").strip()
-        if not repo:
-            return
-
-        raw_url = f"https://raw.githubusercontent.com/{repo}/main/db_backup/database.db"
-        response = requests.get(raw_url, timeout=20)
-        if response.status_code == 200 and response.content:
-            DB_PATH.write_bytes(response.content)
-    except Exception:
-        pass
-
-
-def backup_db_to_github():
-    if not DB_PATH.exists():
-        return False, "Local database file not found"
-
-    token = os.getenv("GITHUB_TOKEN", "").strip()
-    repo = os.getenv("GITHUB_REPO", "").strip()
-    if not token or not repo:
-        return False, "GITHUB_TOKEN or GITHUB_REPO is missing"
-
-    try:
-        encoded_db = base64.b64encode(DB_PATH.read_bytes()).decode("utf-8")
-    except Exception as exc:
-        app.logger.exception("Failed to read database for backup")
-        return False, f"Failed to read local database: {exc}"
-
-    contents_url = f"https://api.github.com/repos/{repo}/contents/db_backup/database.db"
-    headers = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github+json",
-    }
-
-    sha = None
-    try:
-        metadata_response = requests.get(contents_url, headers=headers, timeout=20)
-    except Exception as exc:
-        app.logger.exception("Failed to fetch backup metadata from GitHub")
-        return False, f"Failed to contact GitHub API while reading metadata: {exc}"
-
-    if metadata_response.status_code == 200:
-        try:
-            sha = (metadata_response.json() or {}).get("sha")
-        except Exception as exc:
-            app.logger.exception("Failed to parse GitHub metadata response")
-            return False, f"Invalid metadata response from GitHub: {exc}"
-    elif metadata_response.status_code != 404:
-        return False, f"GitHub metadata request failed with status {metadata_response.status_code}: {metadata_response.text[:200]}"
-
-    payload = {
-        "message": "Auto backup database",
-        "content": encoded_db,
-    }
-    if sha:
-        payload["sha"] = sha
-
-    try:
-        upload_response = requests.put(contents_url, headers=headers, json=payload, timeout=30)
-    except Exception as exc:
-        app.logger.exception("Failed to upload backup to GitHub")
-        return False, f"Failed to contact GitHub API while uploading backup: {exc}"
-
-    if upload_response.status_code not in {200, 201}:
-        return False, f"GitHub backup upload failed with status {upload_response.status_code}: {upload_response.text[:200]}"
-
-    return True, "Database backed up"
+def is_constraint_error(exc):
+    message = str(exc or "").upper()
+    markers = (
+        "CONSTRAINT FAILED",
+        "UNIQUE CONSTRAINT FAILED",
+        "NOT NULL CONSTRAINT FAILED",
+        "FOREIGN KEY CONSTRAINT FAILED",
+        "CHECK CONSTRAINT FAILED",
+    )
+    return any(marker in message for marker in markers)
 
 
 def has_col(conn, table, col):
@@ -627,18 +662,18 @@ def rebuild_schema_if_needed(conn):
 
 def init_db():
     with conn_db() as conn:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS employee_categories(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,required_hours REAL NOT NULL);
-            CREATE TABLE IF NOT EXISTS shifts(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,start_time TEXT NOT NULL,end_time TEXT NOT NULL,grace_minutes INTEGER NOT NULL DEFAULT 15);
-            CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,name TEXT,role TEXT NOT NULL DEFAULT 'EMPLOYEE',employee_code TEXT,pin_hash TEXT,category_id INTEGER,shift_id INTEGER,category_hours INTEGER,active INTEGER NOT NULL DEFAULT 1,created_at TEXT);
-            CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,attendance_date TEXT NOT NULL,login_time TEXT,login_method TEXT,logout_time TEXT,total_hours REAL,overtime REAL,late_mark INTEGER NOT NULL DEFAULT 0,break_taken INTEGER NOT NULL DEFAULT 1,scheduled_shift_start TEXT,scheduled_shift_end TEXT,scheduled_grace_minutes INTEGER,status TEXT NOT NULL DEFAULT 'PRESENT',system_logout INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT,UNIQUE(user_id,attendance_date));
-            CREATE TABLE IF NOT EXISTS qr_sessions(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,purpose TEXT NOT NULL,expires_at INTEGER NOT NULL,used INTEGER NOT NULL DEFAULT 0,otp_hash TEXT,otp_failed_attempts INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL);
-            CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id,attendance_date);
-            CREATE INDEX IF NOT EXISTS idx_attendance_status_date ON attendance(status,attendance_date);
-            CREATE INDEX IF NOT EXISTS idx_qr_sessions_user_active ON qr_sessions(user_id,used,expires_at,created_at);
-            """
+        bootstrap_statements = (
+            "CREATE TABLE IF NOT EXISTS employee_categories(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,required_hours REAL NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS shifts(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,start_time TEXT NOT NULL,end_time TEXT NOT NULL,grace_minutes INTEGER NOT NULL DEFAULT 15)",
+            "CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,name TEXT,role TEXT NOT NULL DEFAULT 'EMPLOYEE',employee_code TEXT,pin_hash TEXT,category_id INTEGER,shift_id INTEGER,category_hours INTEGER,active INTEGER NOT NULL DEFAULT 1,created_at TEXT)",
+            "CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,attendance_date TEXT NOT NULL,login_time TEXT,login_method TEXT,logout_time TEXT,total_hours REAL,overtime REAL,late_mark INTEGER NOT NULL DEFAULT 0,break_taken INTEGER NOT NULL DEFAULT 1,scheduled_shift_start TEXT,scheduled_shift_end TEXT,scheduled_grace_minutes INTEGER,status TEXT NOT NULL DEFAULT 'PRESENT',system_logout INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT,UNIQUE(user_id,attendance_date))",
+            "CREATE TABLE IF NOT EXISTS qr_sessions(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,purpose TEXT NOT NULL,expires_at INTEGER NOT NULL,used INTEGER NOT NULL DEFAULT 0,otp_hash TEXT,otp_failed_attempts INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL)",
+            "CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id,attendance_date)",
+            "CREATE INDEX IF NOT EXISTS idx_attendance_status_date ON attendance(status,attendance_date)",
+            "CREATE INDEX IF NOT EXISTS idx_qr_sessions_user_active ON qr_sessions(user_id,used,expires_at,created_at)",
         )
+        for statement in bootstrap_statements:
+            conn.execute(statement)
         rebuild_schema_if_needed(conn)
         ensure_col(conn, "users", "role", "TEXT NOT NULL DEFAULT 'EMPLOYEE'")
         ensure_col(conn, "users", "employee_code", "TEXT")
@@ -1032,11 +1067,9 @@ def midnight_close():
 
 @app.get("/admin/backup-db")
 def backup_db():
-    ok, message = backup_db_to_github()
-    if not ok:
-        app.logger.warning("Backup request failed: %s", message)
-        return {"message": message}, 500
-    return {"message": message}
+    return {
+        "message": "This deployment uses Turso libSQL. Use Turso branches or backups instead of the legacy local GitHub database-file backup flow."
+    }, 501
 
 
 def parse_filters():
@@ -1585,7 +1618,9 @@ def admin_attendance_bulk_add():
                     )
                 processed.append({"attendance_id": attendance_id, "attendance_date": item["attendance_date"]})
             conn.commit()
-        except sqlite3.IntegrityError as e:
+        except Exception as e:
+            if not is_constraint_error(e):
+                raise
             conn.rollback()
             return jsonify({"message": str(e)}), 400
     return jsonify({"message": "Bulk attendance entries saved", "employee_code": code, "count": len(processed), "items": processed})
@@ -1719,7 +1754,10 @@ def users_create():
                 ),
             )
             conn.commit()
-        except sqlite3.IntegrityError as e:
+        except Exception as e:
+            if not is_constraint_error(e):
+                raise
+            conn.rollback()
             return jsonify({"message": str(e)}), 400
     return jsonify({"message": "User created", "id": int(cur.lastrowid)})
 
@@ -1767,7 +1805,9 @@ def users_create_bulk():
                 )
                 created.append({"id": int(cur.lastrowid), "employee_code": entry["employee_code"]})
             conn.commit()
-        except sqlite3.IntegrityError as e:
+        except Exception as e:
+            if not is_constraint_error(e):
+                raise
             conn.rollback()
             return jsonify({"message": str(e)}), 400
     return jsonify({"message": "Bulk users created", "created_count": len(created), "created": created})
@@ -1800,7 +1840,10 @@ def users_update(user_id):
         try:
             conn.execute(f"UPDATE users SET {', '.join(fields)} WHERE id=?", tuple(params))
             conn.commit()
-        except sqlite3.IntegrityError as e:
+        except Exception as e:
+            if not is_constraint_error(e):
+                raise
+            conn.rollback()
             return jsonify({"message": str(e)}), 400
     return jsonify({"message": "User updated"})
 
@@ -1845,7 +1888,10 @@ def categories_create():
     with conn_db() as conn:
         try:
             cur = conn.execute("INSERT INTO employee_categories (name,required_hours) VALUES (?,?)", (name, req)); conn.commit()
-        except sqlite3.IntegrityError as e:
+        except Exception as e:
+            if not is_constraint_error(e):
+                raise
+            conn.rollback()
             return jsonify({"message": str(e)}), 400
     return jsonify({"message": "Category created", "id": int(cur.lastrowid)})
 
@@ -1862,7 +1908,10 @@ def categories_update(category_id):
     with conn_db() as conn:
         try:
             conn.execute(f"UPDATE employee_categories SET {', '.join(fields)} WHERE id=?", tuple(params)); conn.commit()
-        except sqlite3.IntegrityError as e:
+        except Exception as e:
+            if not is_constraint_error(e):
+                raise
+            conn.rollback()
             return jsonify({"message": str(e)}), 400
     return jsonify({"message": "Category updated"})
 
@@ -1903,7 +1952,10 @@ def shifts_create():
     with conn_db() as conn:
         try:
             cur = conn.execute("INSERT INTO shifts (name,start_time,end_time,grace_minutes) VALUES (?,?,?,?)", (name, st, et, g)); conn.commit()
-        except sqlite3.IntegrityError as e:
+        except Exception as e:
+            if not is_constraint_error(e):
+                raise
+            conn.rollback()
             return jsonify({"message": str(e)}), 400
     return jsonify({"message": "Shift created", "id": int(cur.lastrowid)})
 
@@ -1922,7 +1974,10 @@ def shifts_update(shift_id):
     with conn_db() as conn:
         try:
             conn.execute(f"UPDATE shifts SET {', '.join(fields)} WHERE id=?", tuple(params)); conn.commit()
-        except sqlite3.IntegrityError as e:
+        except Exception as e:
+            if not is_constraint_error(e):
+                raise
+            conn.rollback()
             return jsonify({"message": str(e)}), 400
     return jsonify({"message": "Shift updated"})
 
@@ -2024,7 +2079,6 @@ def export_my_attendance_xlsx():
     out.seek(0)
     return send_file(out, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name=f"my_attendance_{dfrom.isoformat()}_{dto.isoformat()}.xlsx")
 
-restore_db_from_github()
 init_db()
 
 if __name__ == "__main__":

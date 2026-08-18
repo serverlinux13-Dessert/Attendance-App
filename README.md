@@ -1,7 +1,7 @@
 # Attendance App
 
 On-prem attendance system with:
-- Flask backend + SQLite
+- Flask backend + Turso libSQL
 - PIN authentication (Admin/Employee)
 - Admin dashboard (attendance, users, categories, shifts, approvals, audit, XLSX export)
 - Employee dashboard (summary, history, edit requests)
@@ -20,6 +20,8 @@ Or manual:
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+$env:TURSO_DATABASE_URL = "libsql://your-database-name-your-org.turso.io"
+$env:TURSO_AUTH_TOKEN = "replace-with-your-turso-auth-token"
 python app.py
 ```
 
@@ -47,6 +49,8 @@ cp .env.example .env
 Set at least:
 - `APP_ENV=production`
 - `SECRET_KEY=<long random value>`
+- `TURSO_DATABASE_URL=libsql://<your-db>.turso.io`
+- `TURSO_AUTH_TOKEN=<set in env vars>`
 - `TRUST_PROXY=1` (when running behind nginx)
 - `SESSION_COOKIE_SECURE=1` for HTTPS, or `0` for HTTP-only LAN usage
 
@@ -77,7 +81,7 @@ set +a
 .venv/bin/gunicorn --workers 1 --threads 4 --bind 127.0.0.1:8000 wsgi:application
 ```
 
-`workers=1` is intentional because SQLite is used.
+`workers=1` is a conservative default. Because the database is remote, you can raise workers later if your host has enough CPU and memory.
 
 4. Install systemd service:
 
@@ -115,6 +119,8 @@ For a quick production run on Windows, the app now auto-switches to `waitress` w
 ```powershell
 $env:APP_ENV = "production"
 $env:SECRET_KEY = "<long-random-secret>"
+$env:TURSO_DATABASE_URL = "libsql://<your-db>.turso.io"
+$env:TURSO_AUTH_TOKEN = "<set-in-env>"
 $env:TRUST_PROXY = "1"  # set this only when behind reverse proxy
 .\.venv\Scripts\python.exe app.py
 ```
@@ -143,7 +149,22 @@ This repository includes a `render.yaml` blueprint with the correct settings. Im
 - **Environment**:
   - `APP_ENV=production`
   - `SECRET_KEY=<set in Render env vars>`
+  - `TURSO_DATABASE_URL=libsql://<your-db>.turso.io`
+  - `TURSO_AUTH_TOKEN=<set in Render env vars>`
   - `SESSION_COOKIE_SECURE=1`
+
+## Deploy on Vercel
+
+Vercel can detect the root `app.py` Flask application automatically. This repository also includes a `vercel.json` that trims the function bundle by excluding local database backups, deploy files, and virtualenv artifacts.
+
+Set these environment variables in the Vercel project:
+
+- `APP_ENV=production`
+- `SECRET_KEY=<long random value>`
+- `TURSO_DATABASE_URL=libsql://<your-db>.turso.io`
+- `TURSO_AUTH_TOKEN=<set in Vercel env vars>`
+- `TRUST_PROXY=1`
+- `SESSION_COOKIE_SECURE=1`
 
 ## URLs
 

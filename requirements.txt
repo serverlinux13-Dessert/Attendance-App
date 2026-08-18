@@ -1,9 +1,9 @@
 Flask
 flask-cors
+libsql
 qrcode
 Pillow
 tzdata
 openpyxl
 gunicorn
 waitress
-requests

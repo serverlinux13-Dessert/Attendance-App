@@ -28,6 +28,20 @@ if (-not $env:SECRET_KEY) {
   exit 1
 }
 
+if (-not $env:TURSO_DATABASE_URL) {
+  Write-Host "TURSO_DATABASE_URL is required." -ForegroundColor Red
+  Write-Host "Set it first, for example:"
+  Write-Host '$env:TURSO_DATABASE_URL = "libsql://your-database-name-your-org.turso.io"'
+  exit 1
+}
+
+if (-not $env:TURSO_AUTH_TOKEN) {
+  Write-Host "TURSO_AUTH_TOKEN is required." -ForegroundColor Red
+  Write-Host "Set it first, for example:"
+  Write-Host '$env:TURSO_AUTH_TOKEN = "<your-turso-auth-token>"'
+  exit 1
+}
+
 if (-not $env:PORT) {
   $env:PORT = "8000"
 }
