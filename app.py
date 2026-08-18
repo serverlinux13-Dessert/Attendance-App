@@ -303,6 +303,15 @@ def role_bypasses_office_check(role):
     return ALLOW_ADMIN_FROM_ANYWHERE and role == "ADMIN"
 
 
+def scanner_access_check():
+    if office_ok():
+        return None
+    user = auth_user()
+    if user and role_bypasses_office_check(user["role"]):
+        return None
+    return jsonify({"message": "Access allowed only from office network"}), 403
+
+
 def valid_pin(pin):
     return isinstance(pin, str) and pin.isdigit() and len(pin) == 4
 
@@ -810,11 +819,16 @@ def admin_tool_page():
 
 @app.get("/scanner")
 def scanner_page():
-    chk = office_check()
+    chk = scanner_access_check()
     if chk:
         return chk
     return send_from_directory(PUBLIC_DIR, "scanner.html")
 
+@app.get("/routes")
+def routes():
+    return {
+        "routes": [str(r) for r in app.url_map.iter_rules()]
+    }
 
 @app.get("/employee.html")
 @html_guard("EMPLOYEE")
@@ -961,7 +975,7 @@ def generate_qr():
 
 @app.post("/scan")
 def scan_qr():
-    chk = office_check()
+    chk = scanner_access_check()
     if chk:
         return chk
     data = request.get_json(silent=True) or {}
