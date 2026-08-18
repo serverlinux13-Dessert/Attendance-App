@@ -1,5 +1,18 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "version": 2,
+  "builds": [
+    {
+      "src": "app.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "app.py"
+    }
+  ],
   "functions": {
     "app.py": {
       "excludeFiles": "{.venv/**,.dist/**,db_backup/**,deploy/**,__pycache__/**,.git/**,.codex/**,.agents/**}"
