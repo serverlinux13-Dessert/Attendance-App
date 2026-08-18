@@ -5,24 +5,37 @@ import hmac
 import ipaddress
 import io
 import json
+import logging
 import math
 import os
 import secrets
 import uuid
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from functools import wraps
 from pathlib import Path
+from threading import Lock
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import libsql
 import qrcode
-from flask import Flask, jsonify, redirect, render_template, request, send_file, send_from_directory, session, url_for
+from flask import Flask, g, has_request_context, jsonify, redirect, render_template, request, send_file, send_from_directory, session, url_for
 from flask_cors import CORS
+from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
+def env_flag(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 BASE_DIR = Path(__file__).resolve().parent
-PUBLIC_DIR = BASE_DIR / "public"
+PUBLIC_DIR = (BASE_DIR / "public").resolve()
+TEMPLATE_DIR = (BASE_DIR / "templates").resolve()
+STATIC_DIR = (BASE_DIR / "static").resolve()
 
 try:
     IST = ZoneInfo("Asia/Kolkata")
@@ -35,30 +48,78 @@ OTP_MAX_ATTEMPTS = 5
 BREAK_CUTOFF_HOUR = 4
 DEFAULT_EMPLOYEE_PIN = "1111"
 DEFAULT_ADMIN_PIN = "1234"
-TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL", "").strip()
-TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip()
-APP_ENV = os.getenv("APP_ENV", os.getenv("FLASK_ENV", "development")).strip().lower()
-IS_PRODUCTION = APP_ENV == "production"
-SECRET_KEY = os.getenv("SECRET_KEY", "").strip()
-if not SECRET_KEY:
-    if IS_PRODUCTION:
-        raise RuntimeError("SECRET_KEY environment variable is required when APP_ENV=production")
-    SECRET_KEY = "dev-change-this-secret"
-if not TURSO_DATABASE_URL or not TURSO_AUTH_TOKEN:
-    raise RuntimeError("TURSO_DATABASE_URL and TURSO_AUTH_TOKEN environment variables are required")
-REQUIRE_OFFICE_NETWORK = os.getenv("REQUIRE_OFFICE_NETWORK", "0") == "1"
-ALLOWED_SUBNET = os.getenv("ALLOWED_SUBNET", "").strip()
-ALLOWED_SUBNETS = os.getenv("ALLOWED_SUBNETS", "").strip()
-ALLOW_ADMIN_FROM_ANYWHERE = os.getenv("ALLOW_ADMIN_FROM_ANYWHERE", "1") == "1"
-TRUST_PROXY = os.getenv("TRUST_PROXY", "0") == "1"
+DB_READY_LOCK = Lock()
+DB_SCHEMA_READY = False
+
+
+@dataclass(frozen=True)
+class RuntimeSettings:
+    app_env: str
+    is_production: bool
+    is_vercel: bool
+    secret_key: str
+    secret_key_configured: bool
+    turso_database_url: str
+    turso_auth_token: str
+    require_office_network: bool
+    allowed_subnet: str
+    allowed_subnets: str
+    allow_admin_from_anywhere: bool
+    trust_proxy: bool
+    session_cookie_secure: bool
+    enable_route_debug: bool
+    log_level: str
+
+
+def load_runtime_settings():
+    is_vercel = env_flag("VERCEL", False) or bool(os.getenv("VERCEL_ENV", "").strip())
+    app_env = os.getenv("APP_ENV", os.getenv("FLASK_ENV", "production" if is_vercel else "development")).strip().lower()
+    is_production = app_env == "production" or is_vercel
+    secret_key = os.getenv("SECRET_KEY", "").strip()
+    secret_key_configured = bool(secret_key)
+    if not secret_key:
+        secret_key = "dev-change-this-secret" if not is_production else "vercel-misconfigured-secret"
+    log_level = os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO"
+    return RuntimeSettings(
+        app_env=app_env,
+        is_production=is_production,
+        is_vercel=is_vercel,
+        secret_key=secret_key,
+        secret_key_configured=secret_key_configured,
+        turso_database_url=os.getenv("TURSO_DATABASE_URL", "").strip(),
+        turso_auth_token=os.getenv("TURSO_AUTH_TOKEN", "").strip(),
+        require_office_network=env_flag("REQUIRE_OFFICE_NETWORK", False),
+        allowed_subnet=os.getenv("ALLOWED_SUBNET", "").strip(),
+        allowed_subnets=os.getenv("ALLOWED_SUBNETS", "").strip(),
+        allow_admin_from_anywhere=env_flag("ALLOW_ADMIN_FROM_ANYWHERE", True),
+        trust_proxy=env_flag("TRUST_PROXY", is_vercel or is_production),
+        session_cookie_secure=env_flag("SESSION_COOKIE_SECURE", is_vercel or is_production),
+        enable_route_debug=env_flag("ENABLE_ROUTE_DEBUG", True),
+        log_level=log_level,
+    )
+
+
+SETTINGS = load_runtime_settings()
+APP_ENV = SETTINGS.app_env
+IS_PRODUCTION = SETTINGS.is_production
+IS_VERCEL = SETTINGS.is_vercel
+SECRET_KEY = SETTINGS.secret_key
+SECRET_KEY_CONFIGURED = SETTINGS.secret_key_configured
+TURSO_DATABASE_URL = SETTINGS.turso_database_url
+TURSO_AUTH_TOKEN = SETTINGS.turso_auth_token
+REQUIRE_OFFICE_NETWORK = SETTINGS.require_office_network
+ALLOWED_SUBNET = SETTINGS.allowed_subnet
+ALLOWED_SUBNETS = SETTINGS.allowed_subnets
+ALLOW_ADMIN_FROM_ANYWHERE = SETTINGS.allow_admin_from_anywhere
+TRUST_PROXY = SETTINGS.trust_proxy
+SESSION_COOKIE_SECURE = SETTINGS.session_cookie_secure
+ENABLE_ROUTE_DEBUG = SETTINGS.enable_route_debug
 HAS_EXPLICIT_ALLOWED_NETWORKS = bool(ALLOWED_SUBNET or ALLOWED_SUBNETS)
 
-
-def env_flag(name, default=False):
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+logging.basicConfig(
+    level=getattr(logging, SETTINGS.log_level, logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 
 
 def load_allowed_networks():
@@ -85,18 +146,79 @@ def load_allowed_networks():
 
 
 ALLOWED_NETWORKS = load_allowed_networks()
-SESSION_COOKIE_SECURE = env_flag("SESSION_COOKIE_SECURE", IS_PRODUCTION)
-
-app = Flask(__name__)
+app = Flask(__name__, static_folder=str(STATIC_DIR), template_folder=str(TEMPLATE_DIR))
 app.config.update(
     SECRET_KEY=SECRET_KEY,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=SESSION_COOKIE_SECURE,
+    JSON_SORT_KEYS=False,
+    PROPAGATE_EXCEPTIONS=False,
 )
+app.logger.setLevel(getattr(logging, SETTINGS.log_level, logging.INFO))
 if TRUST_PROXY:
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 CORS(app, supports_credentials=True)
+
+
+class AppConfigError(RuntimeError):
+    pass
+
+
+class DatabaseConnectionError(RuntimeError):
+    pass
+
+
+def missing_required_env_vars():
+    missing = []
+    if not SECRET_KEY_CONFIGURED:
+        missing.append("SECRET_KEY")
+    if not TURSO_DATABASE_URL:
+        missing.append("TURSO_DATABASE_URL")
+    if not TURSO_AUTH_TOKEN:
+        missing.append("TURSO_AUTH_TOKEN")
+    return missing
+
+
+def log_runtime_configuration():
+    missing = missing_required_env_vars()
+    if missing:
+        app.logger.error("Missing required environment variables: %s", ", ".join(missing))
+    if not SECRET_KEY_CONFIGURED:
+        app.logger.warning("SECRET_KEY is not configured. Using a fallback key; configure SECRET_KEY for reliable secure sessions.")
+    app.logger.info(
+        "Runtime configuration loaded: env=%s vercel=%s trust_proxy=%s office_restriction=%s public_dir=%s public_exists=%s templates_exists=%s static_exists=%s route_debug=%s",
+        APP_ENV,
+        IS_VERCEL,
+        TRUST_PROXY,
+        REQUIRE_OFFICE_NETWORK,
+        PUBLIC_DIR,
+        PUBLIC_DIR.is_dir(),
+        TEMPLATE_DIR.is_dir(),
+        STATIC_DIR.is_dir(),
+        ENABLE_ROUTE_DEBUG,
+    )
+
+
+def ensure_database_configuration():
+    missing = []
+    if not TURSO_DATABASE_URL:
+        missing.append("TURSO_DATABASE_URL")
+    if not TURSO_AUTH_TOKEN:
+        missing.append("TURSO_AUTH_TOKEN")
+    if missing:
+        raise AppConfigError(f"Missing required environment variables: {', '.join(missing)}")
+
+
+def public_file_path(filename):
+    return PUBLIC_DIR / filename
+
+
+def serve_public_file(filename, mimetype=None):
+    target = public_file_path(filename)
+    if not target.is_file():
+        app.logger.error("Requested public asset is missing: %s", target)
+    return send_from_directory(str(PUBLIC_DIR), filename, mimetype=mimetype)
 
 
 class DBRow(dict):
@@ -195,9 +317,71 @@ class DBConnection:
         return getattr(self._conn, name)
 
 
-def conn_db():
-    conn = libsql.connect(database=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
-    return DBConnection(conn)
+def open_db_connection():
+    ensure_database_configuration()
+    try:
+        return DBConnection(libsql.connect(database=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN))
+    except Exception as exc:
+        app.logger.exception("Failed to open Turso connection")
+        raise DatabaseConnectionError("Unable to connect to Turso database") from exc
+
+
+class DBContext:
+    def __init__(self, initialize=True, prefer_request=True):
+        self.initialize = initialize
+        self.prefer_request = prefer_request
+        self.conn = None
+        self.request_scoped = False
+
+    def __enter__(self):
+        if self.initialize:
+            ensure_db_ready()
+        if self.prefer_request and has_request_context():
+            conn = getattr(g, "_db_conn", None)
+            if conn is None:
+                conn = open_db_connection()
+                g._db_conn = conn
+            self.conn = conn
+            self.request_scoped = True
+            return conn
+        self.conn = open_db_connection()
+        return self.conn
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.conn is None:
+            return False
+        if exc_type is not None:
+            try:
+                self.conn.rollback()
+            except Exception:
+                app.logger.warning("Rollback failed while handling exception", exc_info=True)
+        if self.request_scoped:
+            return False
+        try:
+            self.conn.close()
+        except Exception:
+            app.logger.warning("Failed to close standalone Turso connection", exc_info=True)
+        return False
+
+
+def conn_db(initialize=True, prefer_request=True):
+    return DBContext(initialize=initialize, prefer_request=prefer_request)
+
+
+@app.teardown_appcontext
+def close_request_db(exc):
+    conn = g.pop("_db_conn", None)
+    if conn is None:
+        return
+    if exc is not None:
+        try:
+            conn.rollback()
+        except Exception:
+            app.logger.warning("Rollback failed during request teardown", exc_info=True)
+    try:
+        conn.close()
+    except Exception:
+        app.logger.warning("Failed to close request-scoped Turso connection", exc_info=True)
 
 
 def is_constraint_error(exc):
@@ -272,8 +456,15 @@ def parse_dt(v):
 
 
 def get_client_ip():
-    f = request.headers.get("X-Forwarded-For", "")
-    return f.split(",")[0].strip() if f else (request.remote_addr or "")
+    forwarded_for = request.headers.get("X-Forwarded-For", "")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    if request.access_route:
+        return request.access_route[0]
+    real_ip = request.headers.get("X-Real-IP", "").strip()
+    if real_ip:
+        return real_ip
+    return request.remote_addr or ""
 
 
 def office_ok():
@@ -296,7 +487,7 @@ def office_ok():
 def office_check():
     if office_ok():
         return None
-    return jsonify({"message": "Access allowed only from office network"}), 403
+    return error_response("Access allowed only from office network", 403)
 
 
 def role_bypasses_office_check(role):
@@ -309,7 +500,66 @@ def scanner_access_check():
     user = auth_user()
     if user and role_bypasses_office_check(user["role"]):
         return None
-    return jsonify({"message": "Access allowed only from office network"}), 403
+    return error_response("Access allowed only from office network", 403)
+
+
+def route_manifest():
+    routes = []
+    for rule in sorted(app.url_map.iter_rules(), key=lambda item: item.rule):
+        routes.append(
+            {
+                "rule": rule.rule,
+                "endpoint": rule.endpoint,
+                "methods": sorted(m for m in rule.methods if m not in {"HEAD", "OPTIONS"}),
+            }
+        )
+    return routes
+
+
+def wants_json_response():
+    path = request.path or ""
+    if request.is_json:
+        return True
+    if path.startswith("/api/") or path.startswith("/auth/") or path in {"/health", "/routes", "/scan", "/generate-qr"}:
+        return True
+    accept = request.accept_mimetypes
+    return accept.accept_json and (not accept.accept_html or accept["application/json"] >= accept["text/html"])
+
+
+def error_response(message, status_code, *, details=None):
+    payload = {"message": message, "status": status_code}
+    if details is not None:
+        payload["details"] = details
+    if wants_json_response():
+        return jsonify(payload), status_code
+    return f"{message}\n", status_code, {"Content-Type": "text/plain; charset=utf-8"}
+
+
+@app.errorhandler(AppConfigError)
+def handle_app_config_error(exc):
+    app.logger.error("Application configuration error for %s %s: %s", request.method, request.path, exc)
+    return error_response("Application configuration error", 503, details=str(exc))
+
+
+@app.errorhandler(DatabaseConnectionError)
+def handle_database_connection_error(exc):
+    app.logger.error("Database connection error for %s %s: %s", request.method, request.path, exc)
+    return error_response("Database connection error", 503, details=str(exc))
+
+
+@app.errorhandler(HTTPException)
+def handle_http_exception(exc):
+    if exc.code and exc.code >= 500:
+        app.logger.exception("HTTP exception during %s %s", request.method, request.path)
+    else:
+        app.logger.warning("HTTP exception during %s %s: %s", request.method, request.path, exc)
+    return error_response(exc.description or exc.name, exc.code or 500)
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_exception(exc):
+    app.logger.exception("Unhandled exception during %s %s", request.method, request.path)
+    return error_response("Internal server error", 500, details=str(exc) if not IS_PRODUCTION else None)
 
 
 def valid_pin(pin):
@@ -669,85 +919,98 @@ def rebuild_schema_if_needed(conn):
     conn.execute("DROP INDEX IF EXISTS idx_edit_req_status_created")
 
 
-def init_db():
-    with conn_db() as conn:
-        bootstrap_statements = (
-            "CREATE TABLE IF NOT EXISTS employee_categories(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,required_hours REAL NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS shifts(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,start_time TEXT NOT NULL,end_time TEXT NOT NULL,grace_minutes INTEGER NOT NULL DEFAULT 15)",
-            "CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,name TEXT,role TEXT NOT NULL DEFAULT 'EMPLOYEE',employee_code TEXT,pin_hash TEXT,category_id INTEGER,shift_id INTEGER,category_hours INTEGER,active INTEGER NOT NULL DEFAULT 1,created_at TEXT)",
-            "CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,attendance_date TEXT NOT NULL,login_time TEXT,login_method TEXT,logout_time TEXT,total_hours REAL,overtime REAL,late_mark INTEGER NOT NULL DEFAULT 0,break_taken INTEGER NOT NULL DEFAULT 1,scheduled_shift_start TEXT,scheduled_shift_end TEXT,scheduled_grace_minutes INTEGER,status TEXT NOT NULL DEFAULT 'PRESENT',system_logout INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT,UNIQUE(user_id,attendance_date))",
-            "CREATE TABLE IF NOT EXISTS qr_sessions(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,purpose TEXT NOT NULL,expires_at INTEGER NOT NULL,used INTEGER NOT NULL DEFAULT 0,otp_hash TEXT,otp_failed_attempts INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL)",
-            "CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id,attendance_date)",
-            "CREATE INDEX IF NOT EXISTS idx_attendance_status_date ON attendance(status,attendance_date)",
-            "CREATE INDEX IF NOT EXISTS idx_qr_sessions_user_active ON qr_sessions(user_id,used,expires_at,created_at)",
-        )
-        for statement in bootstrap_statements:
-            conn.execute(statement)
-        rebuild_schema_if_needed(conn)
-        ensure_col(conn, "users", "role", "TEXT NOT NULL DEFAULT 'EMPLOYEE'")
-        ensure_col(conn, "users", "employee_code", "TEXT")
-        ensure_col(conn, "users", "pin_hash", "TEXT")
-        ensure_col(conn, "users", "pin_plain", "TEXT")
-        ensure_col(conn, "users", "category_id", "INTEGER")
-        ensure_col(conn, "users", "shift_id", "INTEGER")
-        ensure_col(conn, "users", "active", "INTEGER NOT NULL DEFAULT 1")
-        ensure_col(conn, "users", "created_at", "TEXT")
-        ensure_col(conn, "attendance", "attendance_date", "TEXT")
-        ensure_col(conn, "attendance", "login_method", "TEXT")
-        ensure_col(conn, "attendance", "late_mark", "INTEGER NOT NULL DEFAULT 0")
-        ensure_col(conn, "attendance", "break_taken", "INTEGER NOT NULL DEFAULT 1")
-        ensure_col(conn, "attendance", "scheduled_shift_start", "TEXT")
-        ensure_col(conn, "attendance", "scheduled_shift_end", "TEXT")
-        ensure_col(conn, "attendance", "scheduled_grace_minutes", "INTEGER")
-        ensure_col(conn, "attendance", "status", "TEXT NOT NULL DEFAULT 'PRESENT'")
-        ensure_col(conn, "attendance", "system_logout", "INTEGER NOT NULL DEFAULT 0")
-        ensure_col(conn, "attendance", "created_at", "TEXT")
-        ensure_col(conn, "attendance", "updated_at", "TEXT")
-        ensure_col(conn, "qr_sessions", "created_at", "TEXT")
-        ensure_col(conn, "qr_sessions", "otp_hash", "TEXT")
-        ensure_col(conn, "qr_sessions", "otp_failed_attempts", "INTEGER NOT NULL DEFAULT 0")
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_employee_code ON users(employee_code)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_qr_sessions_user_active ON qr_sessions(user_id,used,expires_at,created_at)")
-        conn.execute("INSERT OR IGNORE INTO employee_categories (id,name,required_hours) VALUES (1,'General',9)")
-        conn.execute("INSERT OR IGNORE INTO shifts (id,name,start_time,end_time,grace_minutes) VALUES (1,'General Shift','09:00','18:00',15)")
-        conn.execute("INSERT OR IGNORE INTO users (id,name,role,employee_code,category_id,shift_id,category_hours,active,created_at) VALUES (1,'Employee1','EMPLOYEE','EMP001',1,1,9,1,?)", (now_iso(),))
-        conn.execute("INSERT OR IGNORE INTO users (id,name,role,employee_code,category_id,shift_id,category_hours,active,created_at) VALUES (999,'Admin','ADMIN','ADMIN001',1,1,9,1,?)", (now_iso(),))
-        users = conn.execute("SELECT id,role,pin_hash,employee_code FROM users").fetchall()
-        for u in users:
-            if not u["pin_hash"]:
-                pin = DEFAULT_ADMIN_PIN if u["role"] == "ADMIN" else DEFAULT_EMPLOYEE_PIN
-                conn.execute("UPDATE users SET pin_hash=?,pin_plain=? WHERE id=?", (generate_password_hash(pin), pin, u["id"]))
-            if not u["employee_code"]:
-                prefix = "ADMIN" if u["role"] == "ADMIN" else "EMP"
-                conn.execute("UPDATE users SET employee_code=? WHERE id=?", (f"{prefix}{int(u['id']):03d}", u["id"]))
-        conn.execute("UPDATE attendance SET attendance_date=COALESCE(attendance_date,substr(login_time,1,10),substr(created_at,1,10),?) WHERE attendance_date IS NULL", (now_ist().date().isoformat(),))
-        conn.execute("UPDATE attendance SET created_at=COALESCE(created_at,login_time,?),updated_at=COALESCE(updated_at,logout_time,login_time,?) WHERE created_at IS NULL OR updated_at IS NULL", (now_iso(), now_iso()))
-        conn.execute(
-            """
-            UPDATE attendance
-            SET scheduled_shift_start=COALESCE(scheduled_shift_start, (
-                    SELECT COALESCE(s.start_time,'09:00')
-                    FROM users u
-                    LEFT JOIN shifts s ON s.id=u.shift_id
-                    WHERE u.id=attendance.user_id
-                )),
-                scheduled_shift_end=COALESCE(scheduled_shift_end, (
-                    SELECT COALESCE(s.end_time,'18:00')
-                    FROM users u
-                    LEFT JOIN shifts s ON s.id=u.shift_id
-                    WHERE u.id=attendance.user_id
-                )),
-                scheduled_grace_minutes=COALESCE(scheduled_grace_minutes, (
-                    SELECT COALESCE(s.grace_minutes,15)
-                    FROM users u
-                    LEFT JOIN shifts s ON s.id=u.shift_id
-                    WHERE u.id=attendance.user_id
-                ))
-            WHERE scheduled_shift_start IS NULL OR scheduled_shift_end IS NULL OR scheduled_grace_minutes IS NULL
-            """
-        )
-        conn.execute("UPDATE qr_sessions SET created_at=COALESCE(created_at,?) WHERE created_at IS NULL", (now_iso(),))
-        conn.execute("UPDATE qr_sessions SET otp_failed_attempts=COALESCE(otp_failed_attempts,0) WHERE otp_failed_attempts IS NULL")
+def initialize_database_schema(conn):
+    bootstrap_statements = (
+        "CREATE TABLE IF NOT EXISTS employee_categories(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,required_hours REAL NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS shifts(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,start_time TEXT NOT NULL,end_time TEXT NOT NULL,grace_minutes INTEGER NOT NULL DEFAULT 15)",
+        "CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,name TEXT,role TEXT NOT NULL DEFAULT 'EMPLOYEE',employee_code TEXT,pin_hash TEXT,category_id INTEGER,shift_id INTEGER,category_hours INTEGER,active INTEGER NOT NULL DEFAULT 1,created_at TEXT)",
+        "CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,attendance_date TEXT NOT NULL,login_time TEXT,login_method TEXT,logout_time TEXT,total_hours REAL,overtime REAL,late_mark INTEGER NOT NULL DEFAULT 0,break_taken INTEGER NOT NULL DEFAULT 1,scheduled_shift_start TEXT,scheduled_shift_end TEXT,scheduled_grace_minutes INTEGER,status TEXT NOT NULL DEFAULT 'PRESENT',system_logout INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT,UNIQUE(user_id,attendance_date))",
+        "CREATE TABLE IF NOT EXISTS qr_sessions(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,purpose TEXT NOT NULL,expires_at INTEGER NOT NULL,used INTEGER NOT NULL DEFAULT 0,otp_hash TEXT,otp_failed_attempts INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id,attendance_date)",
+        "CREATE INDEX IF NOT EXISTS idx_attendance_status_date ON attendance(status,attendance_date)",
+        "CREATE INDEX IF NOT EXISTS idx_qr_sessions_user_active ON qr_sessions(user_id,used,expires_at,created_at)",
+    )
+    for statement in bootstrap_statements:
+        conn.execute(statement)
+    rebuild_schema_if_needed(conn)
+    ensure_col(conn, "users", "role", "TEXT NOT NULL DEFAULT 'EMPLOYEE'")
+    ensure_col(conn, "users", "employee_code", "TEXT")
+    ensure_col(conn, "users", "pin_hash", "TEXT")
+    ensure_col(conn, "users", "pin_plain", "TEXT")
+    ensure_col(conn, "users", "category_id", "INTEGER")
+    ensure_col(conn, "users", "shift_id", "INTEGER")
+    ensure_col(conn, "users", "active", "INTEGER NOT NULL DEFAULT 1")
+    ensure_col(conn, "users", "created_at", "TEXT")
+    ensure_col(conn, "attendance", "attendance_date", "TEXT")
+    ensure_col(conn, "attendance", "login_method", "TEXT")
+    ensure_col(conn, "attendance", "late_mark", "INTEGER NOT NULL DEFAULT 0")
+    ensure_col(conn, "attendance", "break_taken", "INTEGER NOT NULL DEFAULT 1")
+    ensure_col(conn, "attendance", "scheduled_shift_start", "TEXT")
+    ensure_col(conn, "attendance", "scheduled_shift_end", "TEXT")
+    ensure_col(conn, "attendance", "scheduled_grace_minutes", "INTEGER")
+    ensure_col(conn, "attendance", "status", "TEXT NOT NULL DEFAULT 'PRESENT'")
+    ensure_col(conn, "attendance", "system_logout", "INTEGER NOT NULL DEFAULT 0")
+    ensure_col(conn, "attendance", "created_at", "TEXT")
+    ensure_col(conn, "attendance", "updated_at", "TEXT")
+    ensure_col(conn, "qr_sessions", "created_at", "TEXT")
+    ensure_col(conn, "qr_sessions", "otp_hash", "TEXT")
+    ensure_col(conn, "qr_sessions", "otp_failed_attempts", "INTEGER NOT NULL DEFAULT 0")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_employee_code ON users(employee_code)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_qr_sessions_user_active ON qr_sessions(user_id,used,expires_at,created_at)")
+    conn.execute("INSERT OR IGNORE INTO employee_categories (id,name,required_hours) VALUES (1,'General',9)")
+    conn.execute("INSERT OR IGNORE INTO shifts (id,name,start_time,end_time,grace_minutes) VALUES (1,'General Shift','09:00','18:00',15)")
+    conn.execute("INSERT OR IGNORE INTO users (id,name,role,employee_code,category_id,shift_id,category_hours,active,created_at) VALUES (1,'Employee1','EMPLOYEE','EMP001',1,1,9,1,?)", (now_iso(),))
+    conn.execute("INSERT OR IGNORE INTO users (id,name,role,employee_code,category_id,shift_id,category_hours,active,created_at) VALUES (999,'Admin','ADMIN','ADMIN001',1,1,9,1,?)", (now_iso(),))
+    users = conn.execute("SELECT id,role,pin_hash,employee_code FROM users").fetchall()
+    for u in users:
+        if not u["pin_hash"]:
+            pin = DEFAULT_ADMIN_PIN if u["role"] == "ADMIN" else DEFAULT_EMPLOYEE_PIN
+            conn.execute("UPDATE users SET pin_hash=?,pin_plain=? WHERE id=?", (generate_password_hash(pin), pin, u["id"]))
+        if not u["employee_code"]:
+            prefix = "ADMIN" if u["role"] == "ADMIN" else "EMP"
+            conn.execute("UPDATE users SET employee_code=? WHERE id=?", (f"{prefix}{int(u['id']):03d}", u["id"]))
+    conn.execute("UPDATE attendance SET attendance_date=COALESCE(attendance_date,substr(login_time,1,10),substr(created_at,1,10),?) WHERE attendance_date IS NULL", (now_ist().date().isoformat(),))
+    conn.execute("UPDATE attendance SET created_at=COALESCE(created_at,login_time,?),updated_at=COALESCE(updated_at,logout_time,login_time,?) WHERE created_at IS NULL OR updated_at IS NULL", (now_iso(), now_iso()))
+    conn.execute(
+        """
+        UPDATE attendance
+        SET scheduled_shift_start=COALESCE(scheduled_shift_start, (
+                SELECT COALESCE(s.start_time,'09:00')
+                FROM users u
+                LEFT JOIN shifts s ON s.id=u.shift_id
+                WHERE u.id=attendance.user_id
+            )),
+            scheduled_shift_end=COALESCE(scheduled_shift_end, (
+                SELECT COALESCE(s.end_time,'18:00')
+                FROM users u
+                LEFT JOIN shifts s ON s.id=u.shift_id
+                WHERE u.id=attendance.user_id
+            )),
+            scheduled_grace_minutes=COALESCE(scheduled_grace_minutes, (
+                SELECT COALESCE(s.grace_minutes,15)
+                FROM users u
+                LEFT JOIN shifts s ON s.id=u.shift_id
+                WHERE u.id=attendance.user_id
+            ))
+        WHERE scheduled_shift_start IS NULL OR scheduled_shift_end IS NULL OR scheduled_grace_minutes IS NULL
+        """
+    )
+    conn.execute("UPDATE qr_sessions SET created_at=COALESCE(created_at,?) WHERE created_at IS NULL", (now_iso(),))
+    conn.execute("UPDATE qr_sessions SET otp_failed_attempts=COALESCE(otp_failed_attempts,0) WHERE otp_failed_attempts IS NULL")
+
+
+def ensure_db_ready():
+    global DB_SCHEMA_READY
+    if DB_SCHEMA_READY:
+        return
+    with DB_READY_LOCK:
+        if DB_SCHEMA_READY:
+            return
+        with conn_db(initialize=False, prefer_request=False) as conn:
+            initialize_database_schema(conn)
+            conn.commit()
+        DB_SCHEMA_READY = True
+        app.logger.info("Database schema check completed successfully")
 
 
 def auth_user():
@@ -802,6 +1065,32 @@ def api_guard(role=None):
     return d
 
 
+def turso_health_status():
+    status = {"configured": bool(TURSO_DATABASE_URL and TURSO_AUTH_TOKEN), "reachable": False, "error": None}
+    if not status["configured"]:
+        status["error"] = "Missing TURSO_DATABASE_URL or TURSO_AUTH_TOKEN"
+        return status
+    try:
+        with conn_db(initialize=False, prefer_request=False) as conn:
+            row = conn.execute("SELECT 1 AS ok").fetchone()
+        status["reachable"] = bool(row and int(row["ok"]) == 1)
+    except Exception as exc:
+        app.logger.exception("Health check failed while probing Turso")
+        status["error"] = str(exc)
+    return status
+
+
+def static_health_status():
+    return {
+        "public_dir_exists": PUBLIC_DIR.is_dir(),
+        "templates_dir_exists": TEMPLATE_DIR.is_dir(),
+        "static_dir_exists": STATIC_DIR.is_dir(),
+        "scanner_html_exists": public_file_path("scanner.html").is_file(),
+        "scanner_js_exists": public_file_path("scanner.js").is_file(),
+        "employee_html_exists": public_file_path("employee.html").is_file(),
+    }
+
+
 @app.get("/")
 def root():
     return redirect(url_for("login_page"))
@@ -809,7 +1098,32 @@ def root():
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "time_ist": now_iso()})
+    env_status = {
+        "app_env": APP_ENV,
+        "is_production": IS_PRODUCTION,
+        "is_vercel": IS_VERCEL,
+        "secret_key_configured": SECRET_KEY_CONFIGURED,
+        "turso_database_url_configured": bool(TURSO_DATABASE_URL),
+        "turso_auth_token_configured": bool(TURSO_AUTH_TOKEN),
+        "missing_required": missing_required_env_vars(),
+    }
+    db_status = turso_health_status()
+    static_status = static_health_status()
+    healthy = not env_status["missing_required"] and db_status["reachable"] and static_status["public_dir_exists"] and static_status["scanner_html_exists"] and static_status["scanner_js_exists"]
+    payload = {
+        "status": "ok" if healthy else "degraded",
+        "time_ist": now_iso(),
+        "environment": env_status,
+        "database": db_status,
+        "static": static_status,
+        "request": {
+            "client_ip": get_client_ip(),
+            "trust_proxy": TRUST_PROXY,
+            "require_office_network": REQUIRE_OFFICE_NETWORK,
+        },
+        "schema_initialized_in_process": DB_SCHEMA_READY,
+    }
+    return jsonify(payload), (200 if healthy else 503)
 
 
 @app.get("/admin.html")
@@ -822,29 +1136,42 @@ def scanner_page():
     chk = scanner_access_check()
     if chk:
         return chk
-    return send_from_directory(PUBLIC_DIR, "scanner.html")
+    return serve_public_file("scanner.html")
+
+
+@app.get("/scanner.html")
+def scanner_html_page():
+    return scanner_page()
 
 @app.get("/routes")
 def routes():
-    return {
-        "routes": [str(r) for r in app.url_map.iter_rules()]
-    }
+    if not ENABLE_ROUTE_DEBUG:
+        return error_response("Route diagnostics are disabled", 404)
+    return jsonify(
+        {
+            "route_count": len(route_manifest()),
+            "routes": route_manifest(),
+            "time_ist": now_iso(),
+            "public_dir": str(PUBLIC_DIR),
+            "public_dir_exists": PUBLIC_DIR.is_dir(),
+        }
+    )
 
 @app.get("/employee.html")
 @html_guard("EMPLOYEE")
 def employee_tool_page():
-    return send_from_directory(PUBLIC_DIR, "employee.html")
+    return serve_public_file("employee.html")
 
 
 @app.get("/scanner.js")
 def scanner_js():
-    return send_from_directory(PUBLIC_DIR, "scanner.js")
+    return serve_public_file("scanner.js", mimetype="application/javascript")
 
 
 @app.get("/login")
 def login_page():
     if not office_ok() and not ALLOW_ADMIN_FROM_ANYWHERE:
-        return jsonify({"message": "Access allowed only from office network"}), 403
+        return error_response("Access allowed only from office network", 403)
     if auth_user():
         return redirect(url_for("dashboard"))
     return render_template("login.html")
@@ -894,7 +1221,7 @@ def auth_login():
             return jsonify({"message": "Invalid credentials"}), 401
 
     if not office_ok() and not role_bypasses_office_check(user["role"]):
-        return jsonify({"message": "Access allowed only from office network"}), 403
+        return error_response("Access allowed only from office network", 403)
 
     session["user_id"] = int(user["id"])
     session["role"] = user["role"]
@@ -2093,7 +2420,14 @@ def export_my_attendance_xlsx():
     out.seek(0)
     return send_file(out, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name=f"my_attendance_{dfrom.isoformat()}_{dto.isoformat()}.xlsx")
 
-init_db()
+
+def log_registered_routes():
+    routes = route_manifest()
+    app.logger.info("Registered Flask routes (%s): %s", len(routes), json.dumps(routes))
+
+
+log_runtime_configuration()
+log_registered_routes()
 
 if __name__ == "__main__":
     host = os.getenv("FLASK_RUN_HOST", "0.0.0.0")

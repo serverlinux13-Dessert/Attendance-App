@@ -2,7 +2,9 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
     "app.py": {
-      "excludeFiles": "{.venv/**,.dist/**,db_backup/**,deploy/**,__pycache__/**,.git/**,.codex/**,.agents/**}"
+      "maxDuration": 60,
+      "includeFiles": "{public/**,templates/**,static/**}",
+      "excludeFiles": "{.venv/**,.dist/**,db_backup/**,deploy/**,__pycache__/**,.git/**,.codex/**,.agents/**,*.db,database.db}"
     }
   }
 }
