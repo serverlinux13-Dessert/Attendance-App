@@ -47,6 +47,7 @@ function parseSessionId(rawValue) {
 async function sendScan(payload) {
   const response = await fetch("/scan", {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
