@@ -1314,8 +1314,19 @@ def scan_qr():
     with conn_db() as conn:
         if qr_mode:
             qr = conn.execute("SELECT * FROM qr_sessions WHERE id=?", (token,)).fetchone()
-            if not qr or int(qr["used"]) == 1 or int(qr["expires_at"]) < nowms:
-                return jsonify({"message": "Invalid or expired credential"}), 400
+            if not qr:
+                app.logger.error(f"SCAN FAIL: token not found {token}")
+                return jsonify({"message": "QR token not found"}), 400
+
+            if int(qr["used"]) == 1:
+                app.logger.error(f"SCAN FAIL: token already used {token}")
+                return jsonify({"message": "QR already used"}), 400
+
+            if int(qr["expires_at"]) < nowms:
+                app.logger.error(
+                    f"SCAN FAIL: expired token={token} expires={qr['expires_at']} now={nowms}"
+                )
+                return jsonify({"message": "QR expired"}), 400
             conn.execute("UPDATE qr_sessions SET used=1 WHERE id=?", (token,))
             payload, status = execute_attendance_session_action(conn, int(qr["user_id"]), str(qr["purpose"]).lower(), niso, "QR")
             return jsonify(payload), status
