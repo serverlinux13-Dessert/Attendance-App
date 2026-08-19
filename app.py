@@ -340,6 +340,7 @@ def turso_url_scheme():
 
 def open_db_connection():
     ensure_database_configuration()
+    client_url = turso_client_url()
     try:
         return DBConnection(libsql_client.create_client_sync(url=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN))
     except Exception as exc:
