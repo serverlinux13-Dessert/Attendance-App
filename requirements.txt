@@ -7,3 +7,5 @@ tzdata==2025.3
 openpyxl==3.1.5
 gunicorn
 waitress
+libsql-client
+libsql-experimental
