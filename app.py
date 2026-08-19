@@ -33,7 +33,7 @@ def env_flag(name, default=False):
 
 
 BASE_DIR = Path(__file__).resolve().parent
-PUBLIC_DIR = (BASE_DIR / "public").resolve()
+# PUBLIC_DIR = (BASE_DIR / "public").resolve()
 TEMPLATE_DIR = (BASE_DIR / "templates").resolve()
 STATIC_DIR = (BASE_DIR / "static").resolve()
 
@@ -210,15 +210,15 @@ def ensure_database_configuration():
         raise AppConfigError(f"Missing required environment variables: {', '.join(missing)}")
 
 
-def public_file_path(filename):
-    return PUBLIC_DIR / filename
+# def public_file_path(filename):
+#     return PUBLIC_DIR / filename
 
 
-def serve_public_file(filename, mimetype=None):
-    target = public_file_path(filename)
-    if not target.is_file():
-        app.logger.error("Requested public asset is missing: %s", target)
-    return send_from_directory(str(PUBLIC_DIR), filename, mimetype=mimetype)
+# def serve_public_file(filename, mimetype=None):
+#     target = public_file_path(filename)
+#     if not target.is_file():
+#         app.logger.error("Requested public asset is missing: %s", target)
+#     return send_from_directory(str(PUBLIC_DIR), filename, mimetype=mimetype)
 
 
 class DBRow(dict):
@@ -1131,12 +1131,7 @@ def admin_tool_page():
     return redirect(url_for("scanner_page"))
 
 
-@app.get("/scanner")
-def scanner_page():
-    chk = scanner_access_check()
-    if chk:
-        return chk
-    return serve_public_file("scanner.html")
+
 
 
 @app.get("/scanner.html")
@@ -1157,15 +1152,12 @@ def routes():
         }
     )
 
-@app.get("/employee.html")
-@html_guard("EMPLOYEE")
-def employee_tool_page():
-    return serve_public_file("employee.html")
+# @app.get("/employee.html")
+# @html_guard("EMPLOYEE")
+# def employee_tool_page():
+#     return serve_public_file("employee.html")
 
 
-@app.get("/scanner.js")
-def scanner_js():
-    return serve_public_file("scanner.js", mimetype="application/javascript")
 
 
 @app.get("/login")
@@ -2397,6 +2389,10 @@ def export_xlsx():
 @app.get("/admin.html")
 def admin_tool_page():
     return render_template("admin.html")
+    
+@app.get("/scanner.js")
+def scanner_js():
+    return send_from_directory(STATIC_DIR, "scanner.js")
 
 @app.get("/employee.html")
 def employee_tool_page():
