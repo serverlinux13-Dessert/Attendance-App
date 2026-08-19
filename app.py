@@ -2347,6 +2347,16 @@ def recalc_attendance(conn, attendance_id):
     m = calc_metrics(a["login_time"], a["logout_time"], p)
     conn.execute("UPDATE attendance SET total_hours=?,overtime=?,late_mark=?,status=?,updated_at=? WHERE id=?", (m["total_hours"], m["overtime"], m["late_mark"], m["status"], now_iso(), attendance_id))
 
+@app.get("/debug-files")
+def debug_files():
+    import os
+    from pathlib import Path
+
+    root = Path("/var/task")
+
+    return jsonify({
+        "root_contents": sorted(os.listdir("/var/task")),
+    })
 
 @app.get("/api/admin/export.xlsx")
 @api_guard("ADMIN")
