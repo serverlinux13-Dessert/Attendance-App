@@ -1126,11 +1126,6 @@ def health():
     return jsonify(payload), (200 if healthy else 503)
 
 
-@app.get("/admin.html")
-def admin_tool_page():
-    return redirect(url_for("scanner_page"))
-
-
 
 
 
