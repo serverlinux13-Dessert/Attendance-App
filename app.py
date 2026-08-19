@@ -2394,6 +2394,20 @@ def export_xlsx():
     out = io.BytesIO(); wb.save(out); out.seek(0)
     return send_file(out, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name=f"attendance_{dfrom.isoformat()}_{dto.isoformat()}.xlsx")
 
+@app.get("/admin.html")
+def admin_tool_page():
+    return render_template("admin.html")
+
+@app.get("/employee.html")
+def employee_tool_page():
+    return render_template("employee.html")
+
+@app.get("/scanner")
+def scanner_page():
+    chk = scanner_access_check()
+    if chk:
+        return chk
+    return render_template("scanner.html")
 
 @app.get("/api/employee/export.xlsx")
 @api_guard("EMPLOYEE")
