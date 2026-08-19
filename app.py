@@ -17,7 +17,10 @@ from pathlib import Path
 from threading import Lock
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-import libsql
+import importlib.metadata
+from urllib.parse import urlparse
+
+import libsql_client
 import qrcode
 from flask import Flask, g, has_request_context, jsonify, redirect, render_template, request, send_file, send_from_directory, session, url_for
 from flask_cors import CORS
@@ -33,7 +36,7 @@ def env_flag(name, default=False):
 
 
 BASE_DIR = Path(__file__).resolve().parent
-# PUBLIC_DIR = (BASE_DIR / "public").resolve()
+PUBLIC_DIR = (BASE_DIR / "public").resolve()
 TEMPLATE_DIR = (BASE_DIR / "templates").resolve()
 STATIC_DIR = (BASE_DIR / "static").resolve()
 
@@ -192,8 +195,8 @@ def log_runtime_configuration():
         IS_VERCEL,
         TRUST_PROXY,
         REQUIRE_OFFICE_NETWORK,
-        #PUBLIC_DIR,
-        #PUBLIC_DIR.is_dir(),
+        PUBLIC_DIR,
+        PUBLIC_DIR.is_dir(),
         TEMPLATE_DIR.is_dir(),
         STATIC_DIR.is_dir(),
         ENABLE_ROUTE_DEBUG,
@@ -208,17 +211,13 @@ def ensure_database_configuration():
         missing.append("TURSO_AUTH_TOKEN")
     if missing:
         raise AppConfigError(f"Missing required environment variables: {', '.join(missing)}")
+    scheme = urlparse(TURSO_DATABASE_URL).scheme.lower()
+    if scheme not in {"libsql", "https", "http", "wss", "ws"}:
+        raise AppConfigError("TURSO_DATABASE_URL must be a remote Turso/libSQL URL using libsql, https, http, wss, or ws")
 
 
-# def public_file_path(filename):
-#     return PUBLIC_DIR / filename
-
-
-# def serve_public_file(filename, mimetype=None):
-#     target = public_file_path(filename)
-#     if not target.is_file():
-#         app.logger.error("Requested public asset is missing: %s", target)
-#     return send_from_directory(str(PUBLIC_DIR), filename, mimetype=mimetype)
+def public_file_path(filename):
+    return PUBLIC_DIR / filename
 
 
 class DBRow(dict):
@@ -242,85 +241,115 @@ def wrap_db_row(description, row):
         return DBRow(tuple(row.keys()), tuple(row.values()))
     if not description:
         return row
-    columns = [col[0] for col in description]
+    columns = [col[0] if isinstance(col, (tuple, list)) else col for col in description]
     return DBRow(columns, row)
 
 
 class DBCursor:
-    def __init__(self, cursor):
-        self._cursor = cursor
+    def __init__(self, result=None):
+        self._result = result
+        self._rows = list(getattr(result, "rows", []) or [])
+        self._index = 0
 
     @property
     def description(self):
-        return getattr(self._cursor, "description", None)
+        columns = tuple(getattr(self._result, "columns", ()) or ())
+        return columns or None
 
     @property
     def lastrowid(self):
-        return getattr(self._cursor, "lastrowid", None)
+        return getattr(self._result, "last_insert_rowid", None)
 
     def fetchone(self):
-        return wrap_db_row(self.description, self._cursor.fetchone())
+        if self._index >= len(self._rows):
+            return None
+        row = self._rows[self._index]
+        self._index += 1
+        return wrap_db_row(self.description, row)
 
     def fetchall(self):
-        rows = self._cursor.fetchall()
-        if not rows:
+        if self._index >= len(self._rows):
             return []
+        rows = self._rows[self._index:]
+        self._index = len(self._rows)
         return [wrap_db_row(self.description, row) for row in rows]
 
     def execute(self, sql, params=()):
-        return DBCursor(self._cursor.execute(sql, params))
+        raise DatabaseConnectionError("Use the connection object to execute Turso queries")
 
     def executemany(self, sql, seq_of_parameters):
-        return DBCursor(self._cursor.executemany(sql, seq_of_parameters))
+        raise DatabaseConnectionError("Use the connection object to execute Turso queries")
 
     def __iter__(self):
         return iter(self.fetchall())
 
-    def __getattr__(self, name):
-        return getattr(self._cursor, name)
-
 
 class DBConnection:
-    def __init__(self, conn):
-        self._conn = conn
+    def __init__(self, client):
+        self._client = client
 
     def execute(self, sql, params=()):
-        return DBCursor(self._conn.execute(sql, params))
+        return DBCursor(self._client.execute(sql, params or ()))
 
     def executemany(self, sql, seq_of_parameters):
-        return DBCursor(self._conn.executemany(sql, seq_of_parameters))
+        result = None
+        for params in seq_of_parameters:
+            result = self._client.execute(sql, params or ())
+        return DBCursor(result)
 
     def executescript(self, sql_script):
-        cursor = self._conn.executescript(sql_script)
-        return DBCursor(cursor)
+        statements = [statement.strip() for statement in sql_script.split(";") if statement.strip()]
+        result = None
+        for statement in statements:
+            result = self._client.execute(statement)
+        return DBCursor(result)
 
     def cursor(self):
-        return DBCursor(self._conn.cursor())
+        return self
 
     def commit(self):
-        return self._conn.commit()
+        return None
 
     def rollback(self):
-        return self._conn.rollback()
+        return None
 
     def close(self):
-        return self._conn.close()
+        return self._client.close()
 
     def __enter__(self):
-        self._conn.__enter__()
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        return self._conn.__exit__(exc_type, exc, tb)
+        self.close()
+        return False
 
     def __getattr__(self, name):
-        return getattr(self._conn, name)
+        return getattr(self._client, name)
+
+
+def libsql_client_version():
+    try:
+        return importlib.metadata.version("libsql-client")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def turso_url_scheme(url=None):
+    return urlparse(url or TURSO_DATABASE_URL).scheme.lower()
+
+
+def turso_client_url():
+    parsed = urlparse(TURSO_DATABASE_URL)
+    if parsed.scheme.lower() == "libsql":
+        return parsed._replace(scheme="https").geturl()
+    return TURSO_DATABASE_URL
 
 
 def open_db_connection():
     ensure_database_configuration()
+    client_url = turso_client_url()
     try:
-        return DBConnection(libsql.connect(database=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN))
+        return DBConnection(libsql_client.create_client_sync(url=client_url, auth_token=TURSO_AUTH_TOKEN))
     except Exception as exc:
         app.logger.exception("Failed to open Turso connection")
         raise DatabaseConnectionError("Unable to connect to Turso database") from exc
@@ -355,6 +384,12 @@ class DBContext:
                 self.conn.rollback()
             except Exception:
                 app.logger.warning("Rollback failed while handling exception", exc_info=True)
+        else:
+            try:
+                self.conn.commit()
+            except Exception:
+                app.logger.exception("Failed to commit Turso transaction")
+                raise
         if self.request_scoped:
             return False
         try:
@@ -537,13 +572,13 @@ def error_response(message, status_code, *, details=None):
 
 @app.errorhandler(AppConfigError)
 def handle_app_config_error(exc):
-    app.logger.error("Application configuration error for %s %s: %s", request.method, request.path, exc)
+    app.logger.exception("Application configuration error for %s %s: %s", request.method, request.path, exc)
     return error_response("Application configuration error", 503, details=str(exc))
 
 
 @app.errorhandler(DatabaseConnectionError)
 def handle_database_connection_error(exc):
-    app.logger.error("Database connection error for %s %s: %s", request.method, request.path, exc)
+    app.logger.exception("Database connection error for %s %s: %s", request.method, request.path, exc)
     return error_response("Database connection error", 503, details=str(exc))
 
 
@@ -1273,8 +1308,8 @@ def generate_qr():
             (token,)
         ).fetchone()[0]
 
-        app.logger.error(
-            f"QR CREATED token={token} found_after_insert={check}"
+        app.logger.info(
+            "QR session created in Turso token=%s found_after_insert=%s", token, check
         )
     payload = {"user_id": user_id, "session_token": token}
     qr_text = json.dumps(payload)
@@ -1337,6 +1372,7 @@ def scan_qr():
                 return jsonify({"message": "QR expired"}), 400
             conn.execute("UPDATE qr_sessions SET used=1 WHERE id=?", (token,))
             payload, status = execute_attendance_session_action(conn, int(qr["user_id"]), str(qr["purpose"]).lower(), niso, "QR")
+            conn.commit()
             return jsonify(payload), status
 
         user = conn.execute("SELECT id FROM users WHERE UPPER(employee_code)=UPPER(?) AND active=1", (employee_code,)).fetchone()
@@ -1357,6 +1393,7 @@ def scan_qr():
         attempts = int(qr["otp_failed_attempts"] or 0)
         if attempts >= OTP_MAX_ATTEMPTS:
             conn.execute("UPDATE qr_sessions SET used=1 WHERE id=?", (qr["id"],))
+            conn.commit()
             return jsonify({"message": "OTP locked. Generate a new QR/OTP."}), 400
 
         expected = str(qr["otp_hash"])
@@ -1365,6 +1402,7 @@ def scan_qr():
             new_attempts = attempts + 1
             locked = new_attempts >= OTP_MAX_ATTEMPTS
             conn.execute("UPDATE qr_sessions SET otp_failed_attempts=?,used=? WHERE id=?", (new_attempts, 1 if locked else 0, qr["id"]))
+            conn.commit()
             if locked:
                 return jsonify({"message": "OTP locked after too many failed attempts. Generate a new QR/OTP."}), 400
             remaining = OTP_MAX_ATTEMPTS - new_attempts
@@ -1372,6 +1410,7 @@ def scan_qr():
 
         conn.execute("UPDATE qr_sessions SET used=1 WHERE id=?", (qr["id"],))
         payload, status = execute_attendance_session_action(conn, uid, str(qr["purpose"]).lower(), niso, "OTP")
+        conn.commit()
         return jsonify(payload), status
 
 
@@ -1408,6 +1447,7 @@ def midnight_close():
                 m = calc_metrics(row["login_time"], auto_t, p)
                 conn.execute("UPDATE attendance SET logout_time=?,total_hours=?,overtime=?,late_mark=?,status=?,system_logout=1,updated_at=? WHERE id=?", (auto_t, m["total_hours"], m["overtime"], m["late_mark"], m["status"], now_iso(), row["id"]))
                 auto_logout += 1
+        conn.commit()
 
     return jsonify({"message": "Midnight close completed", "attendance_date": target.isoformat(), "absent_marked": absent, "system_logout_done": auto_logout})
 
@@ -2460,7 +2500,31 @@ def log_registered_routes():
     app.logger.info("Registered Flask routes (%s): %s", len(routes), json.dumps(routes))
 
 
-# log_runtime_configuration()
+def validate_turso_startup():
+    ensure_database_configuration()
+    client_url = turso_client_url()
+    app.logger.info(
+        "Turso Python driver diagnostics: package=libsql-client version=%s env_url_scheme=%s client_url_scheme=%s",
+        libsql_client_version(),
+        turso_url_scheme(),
+        turso_url_scheme(client_url),
+    )
+    try:
+        with conn_db(initialize=False, prefer_request=False) as conn:
+            row = conn.execute("SELECT 1 AS ok").fetchone()
+        if not row or int(row["ok"]) != 1:
+            raise DatabaseConnectionError("Turso startup probe returned an unexpected result")
+        app.logger.info("Successfully connected to Turso database on startup; SELECT 1 result=%s", row["ok"])
+    except AppConfigError:
+        app.logger.exception("Turso startup configuration validation failed")
+        raise
+    except Exception as exc:
+        app.logger.exception("Turso startup connection validation failed")
+        raise DatabaseConnectionError("Unable to validate Turso database connection on startup") from exc
+
+
+log_runtime_configuration()
+validate_turso_startup()
 log_registered_routes()
 
 if __name__ == "__main__":
