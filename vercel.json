@@ -3,8 +3,21 @@
   "functions": {
     "app.py": {
       "maxDuration": 60,
-      "includeFiles": "{public/**,templates/**,static/**}",
-      "excludeFiles": "{.venv/**,.dist/**,db_backup/**,deploy/**,__pycache__/**,.git/**,.codex/**,.agents/**,*.db,database.db}"
+      "includeFiles": [
+        "public/**",
+        "templates/**",
+        "static/**"
+      ],
+      "excludeFiles": [
+        ".venv/**",
+        ".dist/**",
+        "db_backup/**",
+        "deploy/**",
+        "__pycache__/**",
+        ".git/**",
+        "*.db",
+        "database.db"
+      ]
     }
   }
 }
