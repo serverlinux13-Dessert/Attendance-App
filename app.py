@@ -334,22 +334,15 @@ def libsql_client_version():
         return "unknown"
 
 
-def turso_url_scheme(url=None):
-    return urlparse(url or TURSO_DATABASE_URL).scheme.lower()
-
-
-def turso_client_url():
-    parsed = urlparse(TURSO_DATABASE_URL)
-    if parsed.scheme.lower() == "libsql":
-        return parsed._replace(scheme="https").geturl()
-    return TURSO_DATABASE_URL
+def turso_url_scheme():
+    return urlparse(TURSO_DATABASE_URL).scheme.lower()
 
 
 def open_db_connection():
     ensure_database_configuration()
     client_url = turso_client_url()
     try:
-        return DBConnection(libsql_client.create_client_sync(url=client_url, auth_token=TURSO_AUTH_TOKEN))
+        return DBConnection(libsql_client.create_client_sync(url=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN))
     except Exception as exc:
         app.logger.exception("Failed to open Turso connection")
         raise DatabaseConnectionError("Unable to connect to Turso database") from exc
@@ -2502,13 +2495,7 @@ def log_registered_routes():
 
 def validate_turso_startup():
     ensure_database_configuration()
-    client_url = turso_client_url()
-    app.logger.info(
-        "Turso Python driver diagnostics: package=libsql-client version=%s env_url_scheme=%s client_url_scheme=%s",
-        libsql_client_version(),
-        turso_url_scheme(),
-        turso_url_scheme(client_url),
-    )
+    app.logger.info("Turso Python driver diagnostics: package=libsql-client version=%s url_scheme=%s", libsql_client_version(), turso_url_scheme())
     try:
         with conn_db(initialize=False, prefer_request=False) as conn:
             row = conn.execute("SELECT 1 AS ok").fetchone()
