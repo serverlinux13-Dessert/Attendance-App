@@ -192,8 +192,8 @@ def log_runtime_configuration():
         IS_VERCEL,
         TRUST_PROXY,
         REQUIRE_OFFICE_NETWORK,
-        PUBLIC_DIR,
-        PUBLIC_DIR.is_dir(),
+        #PUBLIC_DIR,
+        #PUBLIC_DIR.is_dir(),
         TEMPLATE_DIR.is_dir(),
         STATIC_DIR.is_dir(),
         ENABLE_ROUTE_DEBUG,
@@ -2441,7 +2441,7 @@ def log_registered_routes():
     app.logger.info("Registered Flask routes (%s): %s", len(routes), json.dumps(routes))
 
 
-log_runtime_configuration()
+# log_runtime_configuration()
 log_registered_routes()
 
 if __name__ == "__main__":
