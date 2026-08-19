@@ -1268,6 +1268,14 @@ def generate_qr():
             "INSERT INTO qr_sessions (id,user_id,purpose,expires_at,used,otp_hash,otp_failed_attempts,created_at) VALUES (?,?,?,?,0,?,?,?)",
             (token, user_id, purpose, expires, otp_digest(otp_code, token), 0, now_iso()),
         )
+        check = conn.execute(
+            "SELECT COUNT(*) FROM qr_sessions WHERE id=?",
+            (token,)
+        ).fetchone()[0]
+
+        app.logger.error(
+            f"QR CREATED token={token} found_after_insert={check}"
+        )
     payload = {"user_id": user_id, "session_token": token}
     qr_text = json.dumps(payload)
     img = qrcode.make(qr_text)
