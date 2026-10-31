@@ -194,7 +194,7 @@ Operational notes:
 - QR: `/generate-qr`, `/scan`
 - Midnight: `/admin/run-midnight-close`
 - Admin Data: `/api/admin/attendance`, `/api/admin/summary`
-- Employee Data: `/api/employee/my-attendance`, `/api/employee/my-summary`
+- Employee Data: `/api/employee/my-attendance`, `/api/employee/my-summary`, `/api/employee/shifts`, `/api/employee/my-shift`
 - Management: `/api/admin/users`, `/api/admin/categories`, `/api/admin/shifts`
 - Edit Workflow: `/api/employee/edit-requests`, `/api/admin/edit-requests`
 - Audit + Export: `/api/admin/audit`, `/api/admin/export.xlsx`
@@ -219,7 +219,19 @@ Operational notes:
   - Single-use
   - Expires with session TTL
   - Locked after 5 failed attempts
-  - Generating a new QR/OTP invalidates prior active code for that employee
+- Generating a new QR/OTP invalidates prior active code for that employee
+
+## Mobile and Tablet QR Scanning
+
+- The scanner page is responsive and requests the rear camera when available.
+- Serve the app over HTTPS in production: mobile browsers only allow camera access from a secure context.
+- A device scans a QR shown on another device; it cannot scan a QR displayed on its own screen.
+
+## Employee Shift Selection
+
+- The employee dashboard lists every shift created by an admin and preselects the employee's current admin-assigned shift.
+- Saving a different shift updates the employee's active shift for their next attendance login.
+- Attendance records retain their schedule snapshot, so changing a shift does not modify already-recorded attendance.
 
 ## Break Status Cutoff
 

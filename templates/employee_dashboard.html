@@ -65,6 +65,21 @@
         <p id="breakStatusMsg" class="muted">Save break status anytime. Logout can also save selected value optionally.</p>
       </div>
     </section>
+    <section class="card dashboard-card span-4" data-widget-id="employee-shift-selection">
+      <div class="card-header">
+        <h3>My Shift</h3>
+      </div>
+      <div class="dashboard-card-body">
+        <label for="employeeShiftId">Select a shift</label>
+        <div class="row wrap">
+          <select id="employeeShiftId" aria-describedby="employeeShiftMsg" disabled>
+            <option>Loading shifts...</option>
+          </select>
+          <button id="saveEmployeeShiftBtn" type="button" disabled>Save Shift</button>
+        </div>
+        <p id="employeeShiftMsg" class="muted">Your admin-assigned shift is selected by default. A saved selection applies to your next attendance login.</p>
+      </div>
+    </section>
     <section class="card dashboard-card span-12" data-widget-id="employee-attendance">
       <div class="card-header">
         <h3>My Attendance</h3>

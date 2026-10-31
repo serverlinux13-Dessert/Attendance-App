@@ -270,7 +270,14 @@ async function doSessionLogout() {
 }
 
 const adminState = { users: [], categories: [], shifts: [] };
-const employeeState = { canUpdateBreak: false, isSavingBreak: false };
+const employeeState = {
+  canUpdateBreak: false,
+  isSavingBreak: false,
+  isSavingShift: false,
+  currentShiftId: null,
+  shifts: [],
+  profile: null,
+};
 
 async function doEmployeeLogout() {
   const breakSelect = qs("logoutBreakTaken");
@@ -901,12 +908,111 @@ function renderEmployeeProfile(user) {
   if (shiftEl) shiftEl.textContent = shiftTimings;
 }
 
+function setEmployeeShiftMessage(message) {
+  const statusText = qs("employeeShiftMsg");
+  if (statusText) statusText.textContent = message;
+}
+
+function employeeShiftLabel(shift) {
+  const name = String((shift && shift.name) || "Shift").trim() || "Shift";
+  const start = String((shift && shift.start_time) || "").trim();
+  const end = String((shift && shift.end_time) || "").trim();
+  return start && end ? `${name} (${start} - ${end})` : name;
+}
+
+function renderEmployeeShiftChoices(shifts, selectedId) {
+  const select = qs("employeeShiftId");
+  if (!select) return;
+  select.replaceChildren();
+  (shifts || []).forEach((shift) => {
+    const option = document.createElement("option");
+    option.value = String(shift.id);
+    option.textContent = employeeShiftLabel(shift);
+    option.selected = String(shift.id) === String(selectedId);
+    select.appendChild(option);
+  });
+}
+
+async function loadEmployeeShiftChoices(currentUser) {
+  const select = qs("employeeShiftId");
+  const saveBtn = qs("saveEmployeeShiftBtn");
+  if (!select || !saveBtn) return;
+
+  select.disabled = true;
+  saveBtn.disabled = true;
+  try {
+    const data = await api("/api/employee/shifts");
+    const shifts = Array.isArray(data.items) ? data.items : [];
+    if (!shifts.length) throw new Error("No shifts are available. Ask an administrator to create a shift.");
+
+    const selectedId = data.current_shift_id ?? (currentUser && currentUser.shift_id);
+    employeeState.shifts = shifts;
+    employeeState.currentShiftId = selectedId == null ? null : Number(selectedId);
+    renderEmployeeShiftChoices(shifts, selectedId);
+    select.disabled = false;
+    saveBtn.disabled = false;
+    setEmployeeShiftMessage("Your admin-assigned shift is selected by default. A saved selection applies to your next attendance login.");
+  } catch (error) {
+    employeeState.shifts = [];
+    employeeState.currentShiftId = null;
+    select.replaceChildren();
+    const option = document.createElement("option");
+    option.textContent = "Shifts unavailable";
+    select.appendChild(option);
+    setEmployeeShiftMessage(`Unable to load shifts: ${error.message}`);
+  }
+}
+
+async function saveEmployeeShift() {
+  const select = qs("employeeShiftId");
+  const saveBtn = qs("saveEmployeeShiftBtn");
+  if (!select || !saveBtn || employeeState.isSavingShift) return;
+
+  const shiftId = Number(select.value);
+  if (!Number.isInteger(shiftId) || shiftId <= 0) {
+    setEmployeeShiftMessage("Please select a valid shift.");
+    select.focus();
+    return;
+  }
+
+  employeeState.isSavingShift = true;
+  select.disabled = true;
+  saveBtn.disabled = true;
+  try {
+    const data = await api("/api/employee/my-shift", {
+      method: "PUT",
+      body: JSON.stringify({ shift_id: shiftId }),
+    });
+    const shift = data.shift || employeeState.shifts.find((item) => Number(item.id) === shiftId);
+    employeeState.currentShiftId = shiftId;
+    if (shift) {
+      employeeState.profile = {
+        ...(employeeState.profile || {}),
+        shift_id: shiftId,
+        shift_name: shift.name,
+        shift_start: shift.start_time,
+        shift_end: shift.end_time,
+      };
+      renderEmployeeProfile(employeeState.profile);
+    }
+    setEmployeeShiftMessage(data.message || "Shift selection saved. It will apply to your next attendance login.");
+  } catch (error) {
+    setEmployeeShiftMessage(`Unable to save shift: ${error.message}`);
+    alert(`Could not save shift: ${error.message}`);
+  } finally {
+    employeeState.isSavingShift = false;
+    select.disabled = false;
+    saveBtn.disabled = false;
+  }
+}
+
 async function loadEmployee(currentUser) {
   let user = currentUser;
   if (!user || !user.category_name || !user.shift_start || !user.shift_end) {
     const me = await api("/auth/me");
     user = me.user || user;
   }
+  employeeState.profile = user;
   renderEmployeeProfile(user);
 
   const r = monthRange();
@@ -915,7 +1021,8 @@ async function loadEmployee(currentUser) {
   qs("reloadAttendance").onclick = reloadEmployeeDashboard;
   qs("logoutBtn").onclick = doEmployeeLogout;
   qs("saveBreakBtn").onclick = saveEmployeeBreakStatus;
-  await reloadEmployeeDashboard();
+  qs("saveEmployeeShiftBtn").onclick = saveEmployeeShift;
+  await Promise.all([loadEmployeeShiftChoices(user), reloadEmployeeDashboard()]);
 }
 
 async function loadEmployeeBreakStatus() {
