@@ -1265,6 +1265,8 @@ def auth_me():
     with conn_db() as conn:
         p = user_profile(conn, int(u["id"]))
     category_name = p["category_name"] if p else "General"
+    shift_id = int(p["shift_id"]) if p and p["shift_id"] is not None else None
+    shift_name = p["shift_name"] if p else "General Shift"
     shift_start = p["shift_start"] if p else "09:00"
     shift_end = p["shift_end"] if p else "18:00"
     return jsonify(
@@ -1275,6 +1277,8 @@ def auth_me():
                 "role": u["role"],
                 "employee_code": u["employee_code"],
                 "category_name": category_name,
+                "shift_id": shift_id,
+                "shift_name": shift_name,
                 "shift_start": shift_start,
                 "shift_end": shift_end,
             }
@@ -2068,6 +2072,53 @@ def my_summary():
             (u["id"], dfrom.isoformat(), dto.isoformat()),
         ).fetchone()
     return jsonify(dict(row))
+
+
+@app.get("/api/employee/shifts")
+@api_guard("EMPLOYEE")
+def employee_shifts_list():
+    """Return all admin-created shifts for the employee shift selector."""
+    u = request.current_user
+    with conn_db() as conn:
+        profile = user_profile(conn, int(u["id"]))
+        if not profile:
+            return jsonify({"message": "User not found or inactive"}), 404
+        rows = conn.execute(
+            "SELECT id,name,start_time,end_time,grace_minutes FROM shifts ORDER BY id"
+        ).fetchall()
+    current_shift_id = int(profile["shift_id"]) if profile["shift_id"] is not None else None
+    return jsonify({"items": to_items(rows), "current_shift_id": current_shift_id})
+
+
+@app.put("/api/employee/my-shift")
+@api_guard("EMPLOYEE")
+def employee_shift_update():
+    """Save an employee-selected shift after checking it is still admin-created."""
+    u = request.current_user
+    data = request.get_json(silent=True) or {}
+    try:
+        shift_id = int(data.get("shift_id"))
+    except (TypeError, ValueError):
+        return jsonify({"message": "shift_id must be a valid shift"}), 400
+    if shift_id <= 0:
+        return jsonify({"message": "shift_id must be a valid shift"}), 400
+
+    with conn_db() as conn:
+        shift = conn.execute(
+            "SELECT id,name,start_time,end_time,grace_minutes FROM shifts WHERE id=?",
+            (shift_id,),
+        ).fetchone()
+        if not shift:
+            return jsonify({"message": "Selected shift is no longer available"}), 400
+        conn.execute("UPDATE users SET shift_id=? WHERE id=? AND active=1", (shift_id, int(u["id"])))
+        conn.commit()
+
+    return jsonify(
+        {
+            "message": "Shift selection saved. It will apply to your next attendance login.",
+            "shift": dict(shift),
+        }
+    )
 
 
 @app.get("/api/employee/today-break")
