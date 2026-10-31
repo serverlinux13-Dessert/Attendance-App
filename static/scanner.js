@@ -17,7 +17,11 @@ let scanning = false;
 let barcodeDetector = null;
 
 if ("BarcodeDetector" in window) {
-  barcodeDetector = new BarcodeDetector({ formats: ["qr_code"] });
+  try {
+    barcodeDetector = new BarcodeDetector({ formats: ["qr_code"] });
+  } catch (_error) {
+    // jsQR remains available as a browser-compatible fallback.
+  }
 }
 
 function currentMode() {
@@ -96,6 +100,13 @@ async function submitOtp() {
 }
 
 function detectFromJsQr() {
+  if (previewVideo.readyState < 2 || !window.jsQR) return "";
+  const sourceWidth = previewVideo.videoWidth || 640;
+  const sourceHeight = previewVideo.videoHeight || 480;
+  const maxWidth = 960;
+  const scale = Math.min(1, maxWidth / sourceWidth);
+  captureCanvas.width = Math.max(1, Math.round(sourceWidth * scale));
+  captureCanvas.height = Math.max(1, Math.round(sourceHeight * scale));
   const ctx = captureCanvas.getContext("2d", { willReadFrequently: true });
   ctx.drawImage(previewVideo, 0, 0, captureCanvas.width, captureCanvas.height);
   const image = ctx.getImageData(0, 0, captureCanvas.width, captureCanvas.height);
@@ -111,13 +122,18 @@ async function detectFrame() {
   }
 
   let rawValue = "";
-  if (barcodeDetector) {
-    const codes = await barcodeDetector.detect(previewVideo);
-    if (codes.length > 0) {
-      rawValue = codes[0].rawValue || "";
+  try {
+    if (barcodeDetector && previewVideo.readyState >= 2) {
+      const codes = await barcodeDetector.detect(previewVideo);
+      if (codes.length > 0) {
+        rawValue = codes[0].rawValue || "";
+      }
+    } else if (window.jsQR) {
+      rawValue = detectFromJsQr();
     }
-  } else if (window.jsQR) {
-    rawValue = detectFromJsQr();
+  } catch (_error) {
+    // A dropped video frame should not stop scanning. jsQR can retry next frame.
+    if (window.jsQR) rawValue = detectFromJsQr();
   }
 
   if (rawValue) {
@@ -142,12 +158,21 @@ async function startCamera() {
     setStatus("Camera access is not supported in this browser.");
     return;
   }
+  if (!window.isSecureContext && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {
+    setStatus("Camera access requires HTTPS. Open this page through the secure app address.");
+    return;
+  }
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: "environment" },
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      },
       audio: false,
     });
     previewVideo.srcObject = stream;
+    await previewVideo.play();
     scanning = true;
     startCamBtn.disabled = true;
     stopCamBtn.disabled = false;

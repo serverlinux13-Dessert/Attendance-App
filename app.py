@@ -2493,7 +2493,7 @@ def export_xlsx():
 
 @app.get("/admin.html")
 def admin_tool_page():
-    return render_template("admin.html")
+    return redirect(url_for("scanner_page"))
     
 @app.get("/scanner.js")
 def scanner_js():
