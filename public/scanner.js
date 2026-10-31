@@ -49,21 +49,41 @@ function parseSessionId(rawValue) {
 }
 
 async function sendScan(payload) {
-  const response = await fetch("/scan", {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  const data = await response.json();
-  const message = data.message || "Scan completed.";
-  setStatus(message);
-  if (!response.ok) {
+  setStatus("Submitting scan...");
+  const slowRequestTimer = setTimeout(() => {
+    setStatus("The server is taking longer than expected. Waiting for its response...");
+  }, 15000);
+
+  try {
+    const response = await fetch("/scan", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const contentType = response.headers.get("content-type") || "";
+    const hasJsonResponse = contentType.includes("application/json");
+    const data = hasJsonResponse ? await response.json() : {};
+    const message = hasJsonResponse && data.message
+      ? data.message
+      : `The server returned an unexpected response (HTTP ${response.status}).`;
+    setStatus(message);
+    if (!response.ok || !hasJsonResponse) {
+      alert(message);
+      return false;
+    }
+    alert(message);
+    return true;
+  } catch (error) {
+    const message = error && error.name === "TypeError"
+      ? "Could not reach the scanner server. Check the phone's connection and try again."
+      : `Could not complete the scan request: ${(error && error.message) || "unknown error"}`;
+    setStatus(message);
     alert(message);
     return false;
+  } finally {
+    clearTimeout(slowRequestTimer);
   }
-  alert(message);
-  return true;
 }
 
 async function submitQr() {
