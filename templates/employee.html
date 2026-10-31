@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+body {
+  font-family: Arial, sans-serif;
+  font-size: 18px;
+  padding: 16px;
+}
+h2 {
+  font-size: 34px;
+  margin-bottom: 14px;
+}
+button {
+  font-size: 18px;
+  padding: 10px 18px;
+  margin-right: 8px;
+}
+#qr {
+  width: 320px;
+  height: 320px;
+}
+#sid {
+  font-size: 20px;
+  word-break: break-all;
+}
+#otp {
+  font-size: 24px;
+  letter-spacing: 2px;
+}
+#loggedInAs,
+#boundTo {
+  font-size: 20px;
+}
+</style>
+</head>
+<body>
+<h2>Employee Panel</h2>
+<p><a href="/dashboard/employee">Go To Employee Dashboard</a></p>
+<p><b>Logged In As:</b> <span id="loggedInAs">-</span></p>
+<button onclick="generateQR('login')">Login</button>
+<button onclick="generateQR('logout')">Logout</button>
+<br><br>
+<img id="qr" width="320" height="320"/>
+<p><b>Generated For:</b> <span id="boundTo">-</span></p>
+<p><b>Session ID:</b> <span id="sid">-</span></p>
+<p><b>One-Time OTP:</b> <span id="otp">-</span></p>
+<p><b>Valid For:</b> <span id="ttl">-</span></p>
+<button onclick="copySession()">Copy Session ID</button>
+<button onclick="copyOtp()">Copy OTP</button>
+
+<script>
+let currentSessionId = "";
+let currentOtp = "";
+let currentEmployeeCode = "";
+let currentEmployeeName = "";
+let otpDeadlineMs = 0;
+let otpTimerId = null;
+
+function employeeLabel(code, name){
+  const c = String(code || "").trim();
+  const n = String(name || "").trim();
+  if (n && c) return `${n} (${c})`;
+  return c || n || "-";
+}
+
+async function loadCurrentEmployee() {
+  const res = await fetch("/auth/me", { credentials: "include" });
+  if (!res.ok) {
+    location.href = "/login";
+    return false;
+  }
+  const data = await res.json();
+  if (!data.user || data.user.role !== "EMPLOYEE") {
+    location.href = "/dashboard";
+    return false;
+  }
+  currentEmployeeCode = String(data.user.employee_code || "").trim();
+  currentEmployeeName = String(data.user.name || "").trim();
+  const lbl = employeeLabel(currentEmployeeCode, currentEmployeeName);
+  document.getElementById("loggedInAs").textContent = lbl;
+  document.getElementById("boundTo").textContent = lbl;
+  return true;
+}
+
+function updateExpiryText(){
+  const ttlEl = document.getElementById("ttl");
+  if (!otpDeadlineMs) {
+    ttlEl.textContent = "-";
+    return;
+  }
+  const remainingMs = otpDeadlineMs - Date.now();
+  if (remainingMs <= 0) {
+    ttlEl.textContent = "Expired";
+    otpDeadlineMs = 0;
+    if (otpTimerId) {
+      clearInterval(otpTimerId);
+      otpTimerId = null;
+    }
+    return;
+  }
+  const remainingSec = Math.floor(remainingMs / 1000);
+  const mm = Math.floor(remainingSec / 60);
+  const ss = remainingSec % 60;
+  ttlEl.textContent = `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+}
+
+function startExpiryCountdown(seconds){
+  if (otpTimerId) {
+    clearInterval(otpTimerId);
+    otpTimerId = null;
+  }
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    otpDeadlineMs = 0;
+    updateExpiryText();
+    return;
+  }
+  otpDeadlineMs = Date.now() + (seconds * 1000);
+  updateExpiryText();
+  otpTimerId = setInterval(updateExpiryText, 1000);
+}
+
+async function generateQR(purpose){
+  if (!currentEmployeeCode) {
+    const ok = await loadCurrentEmployee();
+    if (!ok) return;
+  }
+  const res = await fetch('/generate-qr', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    credentials:'include',
+    body:JSON.stringify({purpose})
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    if (res.status === 401) {
+      location.href = "/login";
+      return;
+    }
+    alert(data.message || "Failed to generate QR");
+    return;
+  }
+  document.getElementById("qr").src = data.qr;
+  currentEmployeeCode = String(data.employee_code || currentEmployeeCode || "").trim();
+  currentEmployeeName = String(data.employee_name || currentEmployeeName || "").trim();
+  document.getElementById("boundTo").textContent = employeeLabel(currentEmployeeCode, currentEmployeeName);
+  currentSessionId = data.session_id || "";
+  document.getElementById("sid").textContent = currentSessionId || "-";
+  currentOtp = String(data.otp_code || "").trim();
+  document.getElementById("otp").textContent = currentOtp || "-";
+  startExpiryCountdown(Number(data.expires_in_seconds || 0));
+}
+
+async function copySession(){
+  if (!currentSessionId) {
+    alert("Generate a QR first");
+    return;
+  }
+  await navigator.clipboard.writeText(currentSessionId);
+  alert("Session ID copied");
+}
+
+async function copyOtp(){
+  if (!currentOtp) {
+    alert("Generate a QR first");
+    return;
+  }
+  await navigator.clipboard.writeText(currentOtp);
+  alert("OTP copied");
+}
+
+window.addEventListener("DOMContentLoaded", loadCurrentEmployee);
+</script>
+</body>
+</html>

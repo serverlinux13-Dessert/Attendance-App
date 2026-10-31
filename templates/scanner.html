@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Attendance QR Scanner</title>
+<style>
+* {
+  box-sizing: border-box;
+}
+body {
+  max-width: 720px;
+  margin: 0 auto;
+  font-family: Arial, sans-serif;
+  font-size: 18px;
+  padding: clamp(12px, 4vw, 24px);
+  color: #172033;
+}
+h2 {
+  font-size: clamp(26px, 7vw, 34px);
+  margin-bottom: 14px;
+}
+input,
+select,
+button {
+  font-size: 18px;
+  min-height: 46px;
+  padding: 10px 14px;
+  border: 1px solid #aab5c3;
+  border-radius: 8px;
+}
+input {
+  flex: 1 1 280px;
+  width: 100%;
+  min-width: 0;
+}
+select {
+  width: min(100%, 280px);
+}
+button {
+  background: #0f766e;
+  border-color: #0f766e;
+  color: #fff;
+  cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+#status {
+  font-size: 18px;
+  line-height: 1.4;
+}
+#preview {
+  display: block;
+  width: 100%;
+  max-width: 560px;
+  aspect-ratio: 4 / 3;
+  height: auto;
+  border: 1px solid #ccc;
+  border-radius: 12px;
+  background: #111827;
+  object-fit: cover;
+}
+@media (max-width: 480px) {
+  .row > button,
+  .row > select {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+}
+</style>
+</head>
+<body>
+<h2>Scanner Page</h2>
+<div class="row">
+  <label for="scanMode"><b>Mode:</b></label>
+  <select id="scanMode">
+    <option value="qr">QR Scan</option>
+    <option value="otp">OTP Paste</option>
+  </select>
+</div>
+<div id="qrModeSection">
+  <div class="row">
+    <input id="session" placeholder="Paste session_id or QR JSON payload" />
+    <button id="scanQrBtn" type="button">Submit QR/Session</button>
+  </div>
+  <div class="row">
+    <button id="startCamBtn" type="button">Start Camera Scan</button>
+    <button id="stopCamBtn" type="button" disabled>Stop Camera</button>
+  </div>
+</div>
+<div id="otpModeSection" style="display:none;">
+  <div class="row">
+    <input id="otpEmployeeCode" placeholder="Employee Code (e.g. EMP001)" />
+    <input id="otpCode" placeholder="6-digit OTP" maxlength="6" />
+    <button id="scanOtpBtn" type="button">Submit OTP</button>
+  </div>
+</div>
+<p id="status">Camera idle.</p>
+<video id="preview" autoplay playsinline muted></video>
+<canvas id="captureCanvas" style="display:none;"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+<script src="/static/scanner.js?v=2"></script>
+</body>
+</html>

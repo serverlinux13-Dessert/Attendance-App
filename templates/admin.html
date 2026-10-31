@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+body {
+  font-family: Arial, sans-serif;
+  font-size: 18px;
+  padding: 16px;
+}
+h2 {
+  font-size: 34px;
+  margin-bottom: 14px;
+}
+input,
+button {
+  font-size: 18px;
+  padding: 10px 14px;
+}
+input {
+  width: 360px;
+  max-width: 90vw;
+}
+button {
+  margin-left: 6px;
+}
+#status {
+  font-size: 20px;
+}
+#preview {
+  width: 440px;
+  height: 330px;
+  max-width: 95vw;
+  border: 1px solid #ccc;
+}
+</style>
+</head>
+<body>
+<h2>Admin Scanner</h2>
+<p><a href="/dashboard/admin">Go To Admin Dashboard</a></p>
+<input id="session" placeholder="Paste session_id from QR JSON"/>
+<button onclick="scan()">Scan</button>
+<button id="startCamBtn">Start Camera Scan</button>
+<button id="stopCamBtn" disabled>Stop Camera</button>
+<p id="status">Camera idle.</p>
+<video id="preview" width="440" height="330" autoplay playsinline></video>
+<canvas id="captureCanvas" width="440" height="330" style="display:none;"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+<script src="/scanner.js"></script>
+</body>
+</html>
